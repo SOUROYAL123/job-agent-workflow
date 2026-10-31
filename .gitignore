@@ -42,3 +42,6 @@ old_files/
 *_backup.py
 ats_found.txt
 ats_last_run.txt
+
+github_sync_last_run.txt
+companies.txt

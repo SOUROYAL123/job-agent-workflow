@@ -252,7 +252,7 @@ def main() -> int:
         STAMP_FILE.write_text(datetime.now().isoformat(), encoding="utf-8")
 
         # Keep the networking kit current and email any follow-ups that are due (never contacts anyone).
-        for extra in ("networking_helper.py", "followup_reminder.py", "weekly_summary.py"):
+        for extra in ("github_repo_sync.py", "networking_helper.py", "followup_reminder.py", "weekly_summary.py"):
             script = BASE_DIR / extra
             if not script.exists():
                 continue
