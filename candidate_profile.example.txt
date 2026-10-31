@@ -1,0 +1,131 @@
+CANDIDATE PROFILE
+
+Status: Career changer moving into Cloud Support, Cloud Operations, Implementation, or
+Technical Support roles. No paid cloud employment yet; actively applying for entry-level
+and 0–2 years experience roles in Kolkata and remote-India.
+
+Based in Kolkata, India. Open to Kolkata roles (onsite, hybrid or remote) and fully remote roles anywhere in India.
+
+CLOUD READINESS SUMMARY
+- Hands-on AWS experience through personal projects and structured labs: EC2, VPC,
+  subnets, Internet Gateway, Route Tables, Security Groups, S3, RDS, EBS, EFS, IAM,
+  Auto Scaling, ELB, Secrets Manager, SSM Session Manager, and VPC endpoints.
+- Built a two-AZ AWS environment in ap-south-1 using Terraform: public, private
+  application, and isolated database subnets; NAT Gateways; ECS Fargate; Application
+  Load Balancer; ECR; encrypted private RDS PostgreSQL; Secrets Manager; and SSM-based
+  administrative access without public SSH.
+- Linux fundamentals: SSH, file permissions, processes, services, package management,
+  networking diagnostics, and troubleshooting using ss, tcpdump, traceroute, and netcat.
+- Running a live WhatsApp ordering and payment system for a restaurant client using
+  Node.js, PostgreSQL, Twilio, Razorpay webhooks, Railway, and Render. Handles client
+  communication, issue investigation, deployment-related troubleshooting, and production
+  incident follow-up.
+- Preparing for AWS Certified Solutions Architect – Associate (SAA-C03), planned for
+  November 2026.
+- Strong transferable skills: technical troubleshooting, requirement gathering, client
+  communication, deadline management, production-issue ownership, and explaining technical
+  issues to non-technical stakeholders.
+
+TARGET ROLES
+1. Cloud Support Engineer, L1 / L2 — AWS preferred
+2. Implementation Specialist / Implementation Engineer
+3. Technical Support Engineer — Cloud / SaaS
+4. Junior Cloud Engineer / Junior DevOps Engineer — only genuinely entry-level roles
+
+PREFERRED EMPLOYERS
+AWS partners, managed-service providers, and cloud/SaaS companies, including Cloud4C,
+Minfy, CloudThat, and similar firms.
+
+PROFESSIONAL EXPERIENCE
+
+Founder / Technical Owner — LegacyLens Automation | Jul 2022 – Present
+- Built and operate a live WhatsApp ordering and payment system for a restaurant client.
+- Implemented the solution using Node.js, PostgreSQL, Twilio, and Razorpay webhook
+  integrations, with AI-assisted development.
+- Handle direct client communication, requirement clarification, issue reporting, and
+  production incident follow-up.
+- Troubleshoot hosting and application issues on Railway and Render.
+- Applied secure development practices including webhook signature verification,
+  PostgreSQL table design, and Row-Level Security.
+- Relevant cloud-support skills demonstrated: incident investigation, root-cause
+  analysis, stakeholder communication, deployment troubleshooting, and ownership of a
+  live customer-facing system.
+
+Private Tutor — Mathematics and Science, Classes 7–10 | Jul 2022 – Present
+- Explain technical and scientific concepts clearly to students with different levels of
+  prior knowledge.
+- Strengthened communication, patience, structured explanation, and problem-solving
+  skills.
+
+3D Animation and Production Pipeline Roles | 2008 – 2022
+Worked for 14 years in client-facing 3D animation delivery at studios in Kolkata.
+
+Most recent roles:
+- 3D Animator & Production Pipeline Coordinator, Thotsynthesis | Feb 2022 – Jun 2022
+- 3D Animator, Dream4d Animation | Jul 2021 – Jan 2022
+- 3D Generalist, HiTech Animation | Oct 2019 – Jun 2021
+- Animation Lead, AATS Studios | Sep 2018 – Aug 2019
+
+Key transferable experience:
+- Gathered client requirements and translated them into deliverable production plans.
+- Coordinated handoffs between artists, technical leads, and non-technical stakeholders.
+- Tracked pipeline bottlenecks, dependencies, deadlines, and delivery risks.
+- Resolved delivery issues through clear communication and practical troubleshooting.
+- Managed client expectations across multiple projects and deadlines.
+
+HANDS-ON CLOUD AND SYSTEM SKILLS
+
+AWS Projects and Labs
+- Launched and connected to EC2 Linux instances using SSH and EC2 Instance Connect.
+- Configured Security Groups for inbound and outbound traffic, including ports 22, 80,
+  and 443.
+- Created custom VPCs with public subnets, Internet Gateways, and Route Tables.
+- Created and configured S3 buckets, uploaded objects, and worked with bucket permissions.
+- Built a personal Terraform-based AWS architecture in ap-south-1 with:
+  - Two Availability Zones
+  - Public, private application, and isolated database subnets
+  - NAT Gateways
+  - ECS Fargate running a Node.js service in a multi-stage Docker image
+  - Application Load Balancer
+  - ECR with lifecycle policies
+  - Private encrypted RDS PostgreSQL 16 database
+  - Secrets Manager for database credentials
+  - SSM Session Manager and VPC endpoints for administrative access without public SSH
+- Used ss, tcpdump, traceroute, netcat, pg_stat_activity, and pg_locks for debugging and
+  connectivity/database investigation.
+- Completed a lab-level Transit Gateway setup with an IPsec Site-to-Site VPN to a
+  simulated router.
+
+Linux and Troubleshooting
+- Linux CLI: navigation, file inspection, nano/vim editing, chmod/chown permissions,
+  process monitoring with ps/top, systemctl services, and apt/yum package management.
+- Network and application troubleshooting: SSH connectivity, ports, routing, service
+  status, database activity, locks, and basic packet-level investigation.
+
+API, Database, and Version Control
+- PostgreSQL: table design, queries, Row-Level Security, pg_stat_activity, and pg_locks.
+- API/webhook work: Razorpay webhook handling and signature verification.
+- Git: repository cloning, staging, commits, pushes, and basic CLI-based version control.
+
+AWS CERTIFICATION PREPARATION
+- AWS Certified Solutions Architect – Associate (SAA-C03): exam planned November 2026.
+- Studied and practised: IAM roles, policies, and MFA; VPC and subnets; EC2; Auto
+  Scaling; ELB; S3; RDS; EBS; and EFS.
+- Currently strengthening: Lambda, SQS, DynamoDB, and CloudFront.
+
+SCOPE AND HONESTY
+Hands-on cloud experience is from personal projects, labs, and a live self-employed
+product—not paid employment in a cloud team.
+
+Not claimed: Kubernetes, CI/CD pipeline authoring, Terraform in a team or production
+setting, on-call rotation within a company, large-scale AWS production operations, or
+advanced Python.
+
+JOB PREFERENCES
+- Paid full-time roles only.
+- Entry-level to approximately 2 years required experience.
+- LOCATION RULE: In Kolkata (West Bengal), any work mode is acceptable: onsite, hybrid or remote.
+  Everywhere else in India, ONLY fully remote roles are acceptable. Hybrid or onsite roles in
+  other cities (Bengaluru, Pune, Hyderabad, Mumbai, etc.) are not acceptable: score them low.
+- Avoid: senior/lead roles, 5+ years experience requirements, unpaid internships,
+  sales-only roles, and roles requiring expert Kubernetes or production DevOps experience.

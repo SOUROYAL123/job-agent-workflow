@@ -1,0 +1,54 @@
+﻿name: daily-job-agent
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+    - cron: "30 11 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: job-agent
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Prepare candidate profile
+        run: |
+          if [ -n "${{ secrets.CANDIDATE_PROFILE }}" ]; then
+            printf '%s\n' "${{ secrets.CANDIDATE_PROFILE }}" > candidate_profile.txt
+          else
+            cp candidate_profile.example.txt candidate_profile.txt
+          fi
+
+      - name: Run pipeline
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          printf '%s\n' "$ENV_FILE" > .env
+          python auto_runner.py --scheduled
+
+      - name: Save report back to repo
+        if: always()
+        run: |
+          rm -f .env candidate_profile.txt
+          git config user.name "job-agent"
+          git config user.email "job-agent@users.noreply.github.com"
+          git add cloud_jobs_backup.xlsx || true
+          git commit -m "run $(date -u +%F-%H%M)" || echo "nothing to commit"
+          git pull --rebase origin main
+          git push

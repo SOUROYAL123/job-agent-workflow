@@ -1,0 +1,35 @@
+# OPTIONAL. Save as .github/workflows/daily_job_agent.yml in a PRIVATE repo only.
+# jobs.db and the xlsx contain your email subjects/senders and job history.
+# Caveat: Google often blocks Gmail logins from GitHub's servers. If the IMAP/SMTP stages
+# fail there, run locally with run_daily.bat instead, or drop the email stage.
+name: Daily Job Agent
+on:
+  schedule:
+    - cron: "30 2 * * *"   # 08:00 IST
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: python job_agent.py
+      - name: Commit state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add jobs.db cloud_jobs_backup.xlsx
+          git diff --staged --quiet || git commit -m "chore: update job state [skip ci]"
+          git push

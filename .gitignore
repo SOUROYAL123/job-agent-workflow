@@ -1,0 +1,44 @@
+﻿# Secrets
+.env
+.env.*
+!.env.example
+*.bak
+*.bak*
+
+# Environment and cache
+.venv/
+__pycache__/
+*.pyc
+
+# Local data
+jobs.db
+*.xlsx
+weekly_summary_last_sent.txt
+ca_bundle.pem
+t.pem
+ssl_test.py
+make_ca_bundle.py
+backups/
+run_log.txt
+LAST_RUN_STATUS.txt
+last_success.txt
+.env
+.venv/
+__pycache__/
+ca_bundle.pem
+t.pem
+ssl_test.py
+make_ca_bundle.py
+backups/
+run_log.txt
+LAST_RUN_STATUS.txt
+last_success.txt
+
+candidate_profile.txt
+env_new.txt
+*.db
+old_files/
+
+*_backup.py
+ats_found.txt
+ats_last_run.txt

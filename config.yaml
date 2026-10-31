@@ -1,0 +1,22 @@
+﻿model_list:
+  # --- CLOUD API MODELS ---
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: "os.environ/GEMINI_API_KEY"
+
+  - model_name: deepseek-cloud
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: "os.environ/DEEPSEEK_API_KEY"
+
+  # --- OFFLINE OPEN SOURCE MODELS ---
+  - model_name: local-deepseek
+    litellm_params:
+      model: ollama/deepseek-r1:8b
+      api_base: http://localhost:11434
+
+  - model_name: local-llama
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://localhost:11434
