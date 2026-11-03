@@ -29,7 +29,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Restore SQLite Database Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             jobs.db
