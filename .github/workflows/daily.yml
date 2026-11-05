@@ -60,7 +60,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python github_repo_sync.py
           python ats_finder.py
 
       - name: Run Main Job Agent Pipeline
