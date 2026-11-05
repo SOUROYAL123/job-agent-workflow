@@ -110,3 +110,5 @@ ping*.py
 get_chat_id.py
 inspect_keys.py
 update_credentials.py
+
+write_env.py

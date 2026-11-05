@@ -1,828 +1,1951 @@
-﻿"""
-========================================================================================
-ULTIMATE AGENTIC CAREER INTELLIGENCE & JOB SEARCH ENGINE (CareerOS Core)
-========================================================================================
-Integrates:
-- Discovery: Multi-source ingestion (JobSpy, ATS feeds, Remote APIs, Custom JSON)
-- Parsing & Vault: Evidence-backed candidate profile loader (.txt, .md, .pdf/.docx hooks)
-- Security & Anti-Fraud: Domain validation, fee/scam heuristic checks, PII protection
-- Reasoning & Scoring: Google Gemini API (structured JSON response) with offline fallback
-- Alerting: Telegram push notifications for top-tier matches (sent once per job)
-- Persistence: SQLite database (jobs, applications, audit logs)
-- Reporting: Professional multi-tab Excel Workbook (openpyxl) with IST timestamps & styles
-
-Environment variables (set in PowerShell with $env:NAME="value"):
-    GEMINI_API_KEY        optional, enables Gemini scoring (else offline heuristic)
-    TELEGRAM_BOT_TOKEN    optional, from @BotFather
-    TELEGRAM_CHAT_ID      optional, your chat id (message your bot, then check getUpdates)
-========================================================================================
-"""
-
-import os
-from dotenv import load_dotenv
-load_dotenv(override=True)
-import sys
-import json
-import re
-import html
-import hashlib
-import sqlite3
-import argparse
-import urllib.request
-import urllib.error
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass, field
-
-# --------------------------------------------------------------------------------------
-# 1. UPLOAD & CONFIGURATION VARIABLES (CONFIG LAYER)
-# --------------------------------------------------------------------------------------
-@dataclass
-class AgentConfig:
-    # --- Candidate & Profile Upload Variables ---
-    CANDIDATE_PROFILE_PATH: str = os.getenv("CANDIDATE_PROFILE_PATH", "candidate_profile.txt")
-    CANDIDATE_NAME: str = os.getenv("CANDIDATE_NAME", "Sourav Roy Chowdhury")
-    CANDIDATE_BASE_LOCATION: str = os.getenv("CANDIDATE_BASE_LOCATION", "Kolkata, India")
-    TARGET_ROLES: List[str] = field(default_factory=lambda: [
-        "AWS Cloud Support Engineer",
-        "Cloud Support Associate",
-        "Cloud Operations Engineer",
-        "Technical Support Engineer",
-        "Linux Support Engineer",
-        "Infrastructure Support Specialist"
-    ])
-    TARGET_LOCATIONS: List[str] = field(default_factory=lambda: [
-        "Kolkata", "Remote", "Bengaluru", "Hyderabad", "Pune", "Chennai", "Noida", "Gurugram"
-    ])
-
-    # --- AI & Reasoning Engine (Gemini) ---
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-    TEMPERATURE: float = 0.2
-
-    # --- Telegram Alerting ---
-    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
-    TELEGRAM_ALERTS_ENABLED: bool = os.getenv("TELEGRAM_ALERTS_ENABLED", "1") == "1"
-
-    # --- Scoring & Prioritization Thresholds ---
-    MIN_SCORE_TOP_TIER: int = int(os.getenv("MIN_SCORE_TOP_TIER", "80"))
-    MIN_SCORE_DIGEST: int = int(os.getenv("MIN_SCORE_DIGEST", "60"))
-    SENIOR_EXCLUDE_TERMS: List[str] = field(default_factory=lambda: [
-        "staff", "principal", "director", "vp", "head of", "lead architect", "lead", "architect iii"
-    ])
-
-    # --- Storage & Export Variables ---
-    DB_PATH: str = os.getenv("DB_PATH", "jobs_career_vault.db")
-    EXCEL_EXPORT_DIR: str = os.getenv("EXCEL_EXPORT_DIR", "./exports")
-    EXCEL_FILENAME_PREFIX: str = "Job_Digest_Report"
-
-    # --- Timezone & Localization ---
-    TIMEZONE_OFFSET_HOURS: float = 5.5  # IST (UTC+05:30)
-
-    # --- Security & Anti-Fraud Thresholds ---
-    SCAM_KEYWORDS: List[str] = field(default_factory=lambda: [
-        "registration fee", "processing fee", "security deposit", "pay for training",
-        "bank details required before interview", "cryptocurrency investment",
-        "telegram task", "daily payment task", "whatsapp hr only", "send money"
-    ])
-    FREE_EMAIL_DOMAINS: List[str] = field(default_factory=lambda: [
-        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "protonmail.com"
-    ])
-
-config = AgentConfig()
-
-
-# --------------------------------------------------------------------------------------
-# 2. TIME & HASH HELPERS
-# --------------------------------------------------------------------------------------
-def get_current_ist_timestamp() -> str:
-    """Returns ISO format timestamp localized to Indian Standard Time (IST)."""
-    tz_ist = timezone(timedelta(hours=config.TIMEZONE_OFFSET_HOURS))
-    return datetime.now(tz_ist).strftime("%Y-%m-%d %H:%M:%S IST")
-
-def compute_job_hash(url: str, title: str, company: str) -> str:
-    """Generates a stable, canonical hash ignoring tracking query parameters."""
-    clean_url = url.split("?")[0].split("&")[0].strip().lower()
-    norm_title = re.sub(r"[^a-z0-9]", "", title.lower())
-    norm_company = re.sub(r"[^a-z0-9]", "", company.lower())
-    payload = f"{clean_url}|{norm_title}|{norm_company}".encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()[:16]
-
-
-# --------------------------------------------------------------------------------------
-# 3. DATABASE LAYER (SQLITE PERSISTENCE)
-# --------------------------------------------------------------------------------------
-class DatabaseManager:
-    def __init__(self, db_path: str = config.DB_PATH):
-        self.db_path = db_path
-        self._init_db()
-
-    def get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self):
-        with self.get_connection() as conn:
-            # Table 1: Scraped & Ingested Jobs
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_hash TEXT UNIQUE NOT NULL,
-                title TEXT NOT NULL,
-                company TEXT NOT NULL,
-                location TEXT,
-                job_url TEXT NOT NULL,
-                direct_url TEXT,
-                source_channel TEXT NOT NULL,
-                source_site TEXT,
-                date_posted TEXT,
-                discovered_at TEXT NOT NULL,
-                raw_description TEXT,
-                match_score INTEGER DEFAULT 0,
-                priority TEXT DEFAULT 'Unreviewed',
-                recommendation TEXT,
-                fit_reason TEXT,
-                missing_skills TEXT,
-                resume_tailor_tip TEXT,
-                star_pitch TEXT,
-                is_scam INTEGER DEFAULT 0,
-                scam_reason TEXT,
-                scored INTEGER DEFAULT 0,
-                scored_at TEXT,
-                user_notes TEXT DEFAULT '',
-                application_status TEXT DEFAULT 'New',
-                telegram_alerted INTEGER DEFAULT 0
-            );
-            """)
-
-            # Migration: add telegram_alerted to databases created by older versions
-            cols = [r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()]
-            if "telegram_alerted" not in cols:
-                conn.execute("ALTER TABLE jobs ADD COLUMN telegram_alerted INTEGER DEFAULT 0")
-
-            # Table 2: Application Lifecycle & Tracker
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS applications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id INTEGER UNIQUE,
-                company TEXT NOT NULL,
-                title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'Applied',
-                applied_date TEXT NOT NULL,
-                follow_up_date TEXT,
-                notes TEXT,
-                updated_at TEXT,
-                FOREIGN KEY (job_id) REFERENCES jobs(id)
-            );
-            """)
-
-            # Table 3: System Audit & Health Log
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type TEXT NOT NULL,
-                details TEXT,
-                timestamp TEXT NOT NULL
-            );
-            """)
-            conn.commit()
-
-    def insert_or_get_job(self, job_dict: Dict[str, Any]) -> Tuple[int, bool]:
-        """Inserts a job if unique. Returns (job_id, is_new)."""
-        job_hash = compute_job_hash(job_dict["job_url"], job_dict["title"], job_dict["company"])
-        discovered_at = get_current_ist_timestamp()
-        with self.get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM jobs WHERE job_hash = ?", (job_hash,))
-            row = cur.fetchone()
-            if row:
-                return row["id"], False
-
-            cur.execute("""
-            INSERT INTO jobs (
-                job_hash, title, company, location, job_url, direct_url,
-                source_channel, source_site, date_posted, discovered_at,
-                raw_description, user_notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                job_hash, job_dict["title"], job_dict["company"], job_dict.get("location", "Not Specified"),
-                job_dict["job_url"], job_dict.get("direct_url", job_dict["job_url"]),
-                job_dict.get("source_channel", "Scrape"), job_dict.get("source_site", "Direct"),
-                job_dict.get("date_posted", datetime.now().strftime("%Y-%m-%d")),
-                discovered_at, job_dict.get("raw_description", ""), ""
-            ))
-            conn.commit()
-            return cur.lastrowid, True
-
-    def get_unscored_jobs(self) -> List[sqlite3.Row]:
-        with self.get_connection() as conn:
-            return conn.execute("SELECT * FROM jobs WHERE scored = 0").fetchall()
-
-    def get_pending_alerts(self, min_score: int) -> List[sqlite3.Row]:
-        """Top-tier, non-scam, scored jobs that have not been pushed to Telegram yet."""
-        with self.get_connection() as conn:
-            return conn.execute("""
-                SELECT * FROM jobs
-                WHERE scored = 1 AND is_scam = 0
-                  AND match_score >= ? AND telegram_alerted = 0
-                ORDER BY match_score DESC
-            """, (min_score,)).fetchall()
-
-    def mark_alerted(self, job_id: int):
-        with self.get_connection() as conn:
-            conn.execute("UPDATE jobs SET telegram_alerted = 1 WHERE id = ?", (job_id,))
-            conn.commit()
-
-    def update_job_score(self, job_id: int, score_data: Dict[str, Any]):
-        scored_at = get_current_ist_timestamp()
-        with self.get_connection() as conn:
-            conn.execute("""
-            UPDATE jobs SET
-                match_score = ?,
-                priority = ?,
-                recommendation = ?,
-                fit_reason = ?,
-                missing_skills = ?,
-                resume_tailor_tip = ?,
-                star_pitch = ?,
-                is_scam = ?,
-                scam_reason = ?,
-                scored = 1,
-                scored_at = ?
-            WHERE id = ?
-            """, (
-                score_data.get("score", 0),
-                score_data.get("priority", "Low"),
-                score_data.get("recommendation", "Review"),
-                score_data.get("fit_reason", ""),
-                score_data.get("missing_skills", ""),
-                score_data.get("resume_tailor_tip", ""),
-                score_data.get("star_pitch", ""),
-                1 if score_data.get("is_scam") else 0,
-                score_data.get("scam_reason", ""),
-                scored_at,
-                job_id
-            ))
-            conn.commit()
-
-    def log_audit(self, event_type: str, details: str):
-        with self.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO audit_log (event_type, details, timestamp) VALUES (?, ?, ?)",
-                (event_type, details, get_current_ist_timestamp())
-            )
-            conn.commit()
-
-
-# --------------------------------------------------------------------------------------
-# 4. CANDIDATE PROFILE & EVIDENCE VAULT INGESTION
-# --------------------------------------------------------------------------------------
-class CandidateVault:
-    @staticmethod
-    def load_profile(path: str = config.CANDIDATE_PROFILE_PATH) -> str:
-        """Reads candidate profile from text file or returns default verified facts."""
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    return content
-            except Exception as e:
-                print(f"[Vault] Notice: Could not read {path} ({e}). Using embedded verified profile.")
-
-        # Default Verified Profile
-        return """
-        CANDIDATE VERIFIED FACT SHEET:
-        - Candidate Name: Sourav Roy Chowdhury
-        - Target Roles: AWS Cloud Support Engineer, Cloud Operations, Linux/Technical Support Associate.
-        - Primary Base: Kolkata, West Bengal, India. Open to Kolkata on-site/hybrid and India Remote.
-        - Core Hands-on Cloud Skills:
-          * AWS Services: EC2, VPC (multi-AZ subnets, NAT Gateway, IGW, Route Tables), ALB, S3, RDS PostgreSQL,
-            EBS, EFS, IAM (least privilege policies), CloudWatch, CloudTrail, SSM Session Manager (no public SSH), Secrets Manager.
-          * Infrastructure as Code: Terraform (modular configurations, multi-tier VPC architecture).
-          * Linux & OS: Ubuntu/Debian, Bash shell scripting, systemd service management, process triage, permissions, curl/netstat.
-          * Networking: TCP/IP, DNS, DHCP, HTTP/HTTPS, TLS, VPC peering, CIDR routing.
-          * Containers & Databases: Docker containerization, PostgreSQL 16 administration, SQL queries.
-          * Applications & Automation: Node.js, Express, Python REST scripts, Webhook integrations.
-        - Ground Rule: Never fabricate years of commercial AWS employment. Frame experience as rigorous hands-on projects,
-          architectural deployments, and technical lab builds.
-        """.strip()
-
-
-# --------------------------------------------------------------------------------------
-# 5. SECURITY & ANTI-FRAUD ENGINE
-# --------------------------------------------------------------------------------------
-class SecurityFilter:
-    @staticmethod
-    def audit_job(title: str, company: str, description: str) -> Tuple[bool, str]:
-        """
-        Scans job text for malicious red flags:
-        1. Monetary fees or deposits.
-        2. Unofficial recruiter communication channels (WhatsApp only / Telegram tasking).
-        3. Phishing patterns.
-        """
-        text_lower = f"{title} {company} {description}".lower()
-
-        # Check red flag scam keywords
-        for kw in config.SCAM_KEYWORDS:
-            if kw in text_lower:
-                return True, f"High Risk: Detected scam flag phrase '{kw}'"
-
-        # Check suspicious WhatsApp/Telegram-only hiring
-        if re.search(r"(telegram task|send message on whatsapp to hr|pay deposit)", text_lower):
-            return True, "High Risk: Unsolicited task payment or Telegram/WhatsApp HR redirection"
-
-        return False, "Passed Verification"
-
-
-# --------------------------------------------------------------------------------------
-# 6. REASONING & SCORING ENGINE (GEMINI API + HEURISTIC FALLBACK)
-# --------------------------------------------------------------------------------------
-class ScoringEngine:
-    def __init__(self, api_key: str = config.GEMINI_API_KEY, model: str = config.GEMINI_MODEL):
-        self.api_key = api_key
-        self.model = model
-
-    def score_job(self, job: sqlite3.Row, candidate_profile: str) -> Dict[str, Any]:
-        """Evaluates job against verified candidate facts using Gemini API or Heuristic fallback."""
-        title = job["title"]
-        company = job["company"]
-        desc = job["raw_description"] or ""
-
-        # Step A: Pre-LLM Title Guardrail (Avoid senior titles)
-        for term in config.SENIOR_EXCLUDE_TERMS:
-            if re.search(rf"\b{re.escape(term)}\b", title.lower()):
-                return {
-                    "score": 25,
-                    "priority": "Skip",
-                    "recommendation": "Exclude (Senior/Enterprise)",
-                    "fit_reason": f"Title matches senior exclusion filter '{term}'.",
-                    "missing_skills": "Requires multi-year staff/lead enterprise experience",
-                    "resume_tailor_tip": "N/A",
-                    "star_pitch": "N/A",
-                    "is_scam": False,
-                    "scam_reason": ""
-                }
-
-        # Step B: Anti-Fraud Check
-        is_scam, scam_reason = SecurityFilter.audit_job(title, company, desc)
-        if is_scam:
-            return {
-                "score": 0,
-                "priority": "Fraud Alert",
-                "recommendation": "Block & Report",
-                "fit_reason": "Failed security and fraud verification.",
-                "missing_skills": "Legitimate company verification",
-                "resume_tailor_tip": "Do not apply",
-                "star_pitch": "Do not engage",
-                "is_scam": True,
-                "scam_reason": scam_reason
-            }
-
-        # Step C: Gemini API Evaluation (if key provided)
-        if self.api_key:
-            llm_result = self._call_gemini_api(title, company, desc, candidate_profile)
-            if llm_result:
-                return llm_result
-
-        # Step D: Deterministic Heuristic Fallback (Offline / Zero-Token)
-        return self._heuristic_fallback_score(title, desc)
-
-    def _call_gemini_api(self, title: str, company: str, desc: str, profile: str) -> Optional[Dict[str, Any]]:
-        """Invokes Google Gemini REST API using structured JSON output instructions."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-        prompt = f"""
-You are an expert Cloud Engineering Career Strategist and Technical Recruiter.
-Analyze the following Job Posting against the Candidate's Verified Fact Sheet.
-
-CANDIDATE FACTS:
-{profile}
-
-JOB DETAILS:
-Title: {title}
-Company: {company}
-Description: {desc[:2500]}
-
-SCORING RULES (0-100):
-- 85-100: Exceptional match for entry/associate AWS Cloud Support, Linux, Infrastructure, or Operations.
-- 70-84: Strong fit with minor missing niche requirements.
-- 50-69: Moderate fit, adjacent role or requires minor upskilling.
-- <50: Poor fit, high seniority mismatch, or unrelated tech stack.
-- Never invent commercial enterprise experience not present in facts.
-
-Respond ONLY with a valid JSON object matching this exact schema:
-{{
-  "score": <integer 0-100>,
-  "priority": "<High | Medium | Low | Skip>",
-  "recommendation": "<Apply Immediately | Tailor Resume & Apply | Review | Skip>",
-  "fit_reason": "<1-2 concise sentences explaining skill overlap>",
-  "missing_skills": "<comma separated list of missing requirements>",
-  "resume_tailor_tip": "<specific point on how to present candidate projects for this role>",
-  "star_pitch": "<a 2-sentence interview pitch highlighting Terraform or Linux troubleshooting>"
-}}
-"""
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": config.TEMPERATURE,
-                "responseMimeType": "application/json"
-            }
-        }
-
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = json.loads(text)
-                parsed["is_scam"] = False
-                parsed["scam_reason"] = ""
-                return parsed
-        except Exception as e:
-            print(f"[Gemini] API note: {e}. Defaulting to deterministic heuristic engine.")
-            return None
-
-    def _heuristic_fallback_score(self, title: str, desc: str) -> Dict[str, Any]:
-        """Calculates deterministic score based on high-value keyword density."""
-        text = f"{title} {desc}".lower()
-        score = 45  # baseline
-
-        high_val_keywords = ["aws", "cloud", "linux", "ec2", "vpc", "troubleshooting", "bash", "terraform", "support"]
-        matches = [kw for kw in high_val_keywords if kw in text]
-
-        score += len(matches) * 6
-        if "kolkata" in text or "remote" in text:
-            score += 8
-        if "entry" in text or "associate" in text or "junior" in text or "0-2" in text:
-            score += 10
-
-        score = min(score, 94)
-
-        priority = "High" if score >= config.MIN_SCORE_TOP_TIER else ("Medium" if score >= config.MIN_SCORE_DIGEST else "Low")
-        rec = "Apply Immediately" if score >= config.MIN_SCORE_TOP_TIER else "Tailor Resume & Apply"
-
-        return {
-            "score": score,
-            "priority": priority,
-            "recommendation": rec,
-            "fit_reason": f"Matched critical cloud/support competencies: {', '.join(matches[:4])}.",
-            "missing_skills": "Enterprise production support ticketing systems" if "ticket" in text else "None identified",
-            "resume_tailor_tip": "Spotlight multi-tier VPC Terraform deployment and zero-public-access RDS architecture.",
-            "star_pitch": "Demonstrated hands-on VPC and ALB deployment in ap-south-1 with automated CloudWatch logging.",
-            "is_scam": False,
-            "scam_reason": ""
-        }
-
-
-# --------------------------------------------------------------------------------------
-# 7. TELEGRAM ALERTING
-# --------------------------------------------------------------------------------------
-def send_telegram_alert(job, bot_token: str, chat_id: str) -> bool:
-    """
-    Sends an immediate mobile push notification for a top-tier opportunity.
-    Accepts a dict or sqlite3.Row. Returns True only if Telegram confirmed delivery.
-    Uses HTML parse mode with escaping, so '_', '*', '[' in job text cannot break the message.
-    """
-    if not bot_token or not chat_id:
-        return False
-
-    j = dict(job)  # sqlite3.Row has no .get(); normalise to dict
-    esc = lambda v: html.escape(str(v or ""))
-
-    tip = (j.get("resume_tailor_tip") or "")
-    tip = tip if len(tip) <= 180 else tip[:177] + "..."
-
-    text = (
-        f"ðŸš¨ <b>Top Match ({esc(j.get('match_score'))}/100)</b>: {esc(j.get('title'))}\n"
-        f"ðŸ¢ <b>Company</b>: {esc(j.get('company'))} ({esc(j.get('location'))})\n"
-        f"ðŸŽ¯ <b>Recommendation</b>: {esc(j.get('recommendation'))}\n"
-        f"ðŸ’¡ <b>Tip</b>: {esc(tip)}\n"
-        f"ðŸ”— <a href=\"{html.escape(str(j.get('job_url') or ''), quote=True)}\">Apply Here</a>"
-    )
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            return bool(body.get("ok"))
-    except Exception as e:
-        print(f"[Alert] Telegram push failed: {e}")
-        return False
-
-
-def dispatch_alerts(db: DatabaseManager) -> int:
-    """Pushes each top-tier, non-scam job to Telegram once. Returns number sent."""
-    if not config.TELEGRAM_ALERTS_ENABLED:
-        return 0
-    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
-        print("[Alert] Telegram not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID). Skipping alerts.")
-        return 0
-
-    sent = 0
-    for job in db.get_pending_alerts(config.MIN_SCORE_TOP_TIER):
-        if send_telegram_alert(job, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID):
-            db.mark_alerted(job["id"])
-            sent += 1
-            print(f" -> Telegram alert sent: ID {job['id']} '{job['title']}' ({job['match_score']})")
-    db.log_audit("TELEGRAM_ALERTS", f"Sent {sent} top-tier alerts")
-    return sent
-
-
-# --------------------------------------------------------------------------------------
-# 8. EXCEL DIGEST WORKBOOK GENERATOR (OPENPYXL)
-# --------------------------------------------------------------------------------------
-class ExcelReportGenerator:
-    @staticmethod
-    def generate_digest(db: DatabaseManager, output_dir: str = config.EXCEL_EXPORT_DIR) -> str:
-        """Constructs an executive-grade 4-sheet formatted Excel workbook."""
-        try:
-            import openpyxl
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
-        except ImportError:
-            raise ImportError("openpyxl is required. Run: python -m pip install openpyxl")
-
-        os.makedirs(output_dir, exist_ok=True)
-        ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(output_dir, f"{config.EXCEL_FILENAME_PREFIX}_{ts_slug}.xlsx")
-
-        wb = openpyxl.Workbook()
-        wb.remove(wb.active)  # Remove default blank sheet
-
-        # Styles
-        hdr_fill = PatternFill(start_color="1A365D", end_color="1A365D", fill_type="solid")  # Navy
-        hdr_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-        green_fill = PatternFill(start_color="E6F4EA", end_color="E6F4EA", fill_type="solid")
-        amber_fill = PatternFill(start_color="FEF7E0", end_color="FEF7E0", fill_type="solid")
-        red_fill = PatternFill(start_color="FCE8E6", end_color="FCE8E6", fill_type="solid")
-        border_side = Side(style="thin", color="E2E8F0")
-        grid_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
-        link_font = Font(name="Calibri", size=10, color="0969DA", underline="single")
-        base_font = Font(name="Calibri", size=10)
-
-        with db.get_connection() as conn:
-            all_jobs = conn.execute("SELECT * FROM jobs ORDER BY match_score DESC, id DESC").fetchall()
-            top_jobs = [j for j in all_jobs if j["match_score"] >= config.MIN_SCORE_DIGEST and not j["is_scam"]]
-            app_rows = conn.execute("SELECT * FROM applications ORDER BY applied_date DESC").fetchall()
-            audits = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50").fetchall()
-
-        # Sheet 1: Top Matches (Digest Priority)
-        ws_top = wb.create_sheet(title=f"Top_Matches_{config.MIN_SCORE_DIGEST}+")
-        headers_top = [
-            "ID", "Score", "Priority", "Recommendation", "Job Title", "Company", "Location",
-            "Listing Link", "Fit Reason", "Missing Skills", "Resume Tailor Tip", "STAR Pitch Hook",
-            "Discovered At (IST)", "Scored At (IST)", "Notes / Action"
-        ]
-        ws_top.append(headers_top)
-        ws_top.row_dimensions[1].height = 26
-        ws_top.freeze_panes = "E2"
-
-        for r_idx, job in enumerate(top_jobs, start=2):
-            score = job["match_score"]
-            ws_top.append([
-                job["id"], score, job["priority"], job["recommendation"],
-                job["title"], job["company"], job["location"],
-                job["job_url"], job["fit_reason"], job["missing_skills"],
-                job["resume_tailor_tip"], job["star_pitch"],
-                job["discovered_at"], job["scored_at"], job["user_notes"]
-            ])
-            fill = green_fill if score >= config.MIN_SCORE_TOP_TIER else amber_fill
-
-            for c_idx in range(1, len(headers_top) + 1):
-                cell = ws_top.cell(row=r_idx, column=c_idx)
-                cell.border = grid_border
-                cell.font = base_font
-                if c_idx == 2:  # Score highlight
-                    cell.fill = fill
-                    cell.font = Font(name="Calibri", size=11, bold=True)
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif c_idx == 8 and str(cell.value).startswith("http"):
-                    cell.hyperlink = cell.value
-                    cell.font = link_font
-                elif c_idx in [9, 10, 11, 12]:
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
-
-        # Sheet 2: All Scored Jobs (Master Log)
-        ws_all = wb.create_sheet(title="All_Scored_Jobs")
-        headers_all = [
-            "ID", "Score", "Priority", "Title", "Company", "Location", "Source",
-            "URL", "Scam Check", "Scored At (IST)"
-        ]
-        ws_all.append(headers_all)
-        ws_all.row_dimensions[1].height = 24
-        ws_all.freeze_panes = "D2"
-
-        for r_idx, job in enumerate(all_jobs, start=2):
-            ws_all.append([
-                job["id"], job["match_score"], job["priority"], job["title"],
-                job["company"], job["location"], f"{job['source_channel']} ({job['source_site']})",
-                job["job_url"], "FLAGGED SCAM" if job["is_scam"] else "Verified Safe", job["scored_at"]
-            ])
-            for c_idx in range(1, len(headers_all) + 1):
-                cell = ws_all.cell(row=r_idx, column=c_idx)
-                cell.border = grid_border
-                cell.font = base_font
-                if c_idx == 9 and job["is_scam"]:
-                    cell.fill = red_fill
-                    cell.font = Font(name="Calibri", bold=True, color="9C1C1C")
-                if c_idx == 8 and str(cell.value).startswith("http"):
-                    cell.hyperlink = cell.value
-                    cell.font = link_font
-
-        # Sheet 3: Application Lifecycle Tracker
-        ws_app = wb.create_sheet(title="Applications_Tracker")
-        headers_app = ["App ID", "Company", "Job Title", "Status", "Applied Date", "Follow-up Due", "Notes"]
-        ws_app.append(headers_app)
-        ws_app.row_dimensions[1].height = 24
-
-        for r_idx, app in enumerate(app_rows, start=2):
-            ws_app.append([
-                app["id"], app["company"], app["title"], app["status"],
-                app["applied_date"], app["follow_up_date"], app["notes"]
-            ])
-            for c_idx in range(1, len(headers_app) + 1):
-                cell = ws_app.cell(row=r_idx, column=c_idx)
-                cell.border = grid_border
-                cell.font = base_font
-
-        # Sheet 4: System Audit & Health Log
-        ws_audit = wb.create_sheet(title="System_Audit_Log")
-        headers_audit = ["Log ID", "Event Type", "Details", "Timestamp (IST)"]
-        ws_audit.append(headers_audit)
-        for r_idx, log in enumerate(audits, start=2):
-            ws_audit.append([log["id"], log["event_type"], log["details"], log["timestamp"]])
-            for c_idx in range(1, len(headers_audit) + 1):
-                cell = ws_audit.cell(row=r_idx, column=c_idx)
-                cell.border = grid_border
-                cell.font = base_font
-
-        # Header styling + auto-fit column widths across sheets
-        for ws in [ws_top, ws_all, ws_app, ws_audit]:
-            for col in range(1, ws.max_column + 1):
-                cell = ws.cell(row=1, column=col)
-                cell.fill = hdr_fill
-                cell.font = hdr_font
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-            for col in ws.columns:
-                max_len = 0
-                col_letter = get_column_letter(col[0].column)
-                for cell in col:
-                    val_str = str(cell.value or "")
-                    if cell.row == 1:
-                        max_len = max(max_len, len(val_str) + 4)
-                    else:
-                        max_len = max(max_len, min(len(val_str), 55))
-                ws.column_dimensions[col_letter].width = max(max_len + 3, 11)
-
-        wb.save(filepath)
-        return filepath
-
-
-# --------------------------------------------------------------------------------------
-# 9. WORKFLOW RUNNER & CLI INTERFACE
-# --------------------------------------------------------------------------------------
-def seed_sample_jobs(db: DatabaseManager):
-    """Seeds verified representative job feeds for testing."""
-    sample_jobs = [
-        {
-            "title": "AWS Cloud Support Associate",
-            "company": "CloudTech Solutions",
-            "location": "Kolkata, WB (Hybrid)",
-            "job_url": "https://linkedin.com/jobs/view/aws-support-kolkata-39210",
-            "source_channel": "LinkedIn",
-            "source_site": "JobSpy",
-            "raw_description": "Looking for Cloud Support Associate. Key skills: AWS EC2, VPC, Linux system administration, Bash, S3, troubleshooting connectivity, TCP/IP, DNS."
-        },
-        {
-            "title": "Technical Support Engineer - Linux & Cloud",
-            "company": "RedCore Systems",
-            "location": "Remote (India)",
-            "job_url": "https://naukri.com/job-listings-linux-cloud-support-01",
-            "source_channel": "Naukri",
-            "source_site": "JobSpy",
-            "raw_description": "Requirements: Strong Linux troubleshooting (systemd, logs, permissions), Docker container basics, PostgreSQL queries, AWS fundamentals."
-        },
-        {
-            "title": "Cloud Operations Engineer (Tier 1)",
-            "company": "CogniSphere Networks",
-            "location": "Bengaluru (Remote Allowed)",
-            "job_url": "https://remotive.com/jobs/cognisphere-cloud-tier1-99",
-            "source_channel": "RemoteAPI",
-            "source_site": "Remotive",
-            "raw_description": "Monitor production infrastructure, CloudWatch alarms, IAM access reviews, Terraform modular deployments, SLA incident resolution."
-        },
-        {
-            "title": "Senior Principal Cloud Enterprise Architect",
-            "company": "Global MegaCorp",
-            "location": "Kolkata, WB",
-            "job_url": "https://careers.megacorp.com/req-9999",
-            "source_channel": "ATS Feed",
-            "source_site": "Workday",
-            "raw_description": "15+ years experience leading enterprise digital transformation, multi-region Kubernetes, VP level stakeholder communication."
-        },
-        {
-            "title": "Data Entry & Cloud Assistant - Immediate Start",
-            "company": "QuickHire Agency",
-            "location": "Kolkata, WB",
-            "job_url": "https://quikr.com/jobs/unverified-job-881",
-            "source_channel": "Scrape",
-            "source_site": "Portal",
-            "raw_description": "Earn 5000 daily. Pay 1500 registration fee for document processing. Contact HR on WhatsApp only."
-        }
-    ]
-
-    new_count = 0
-    for j in sample_jobs:
-        _, is_new = db.insert_or_get_job(j)
-        if is_new:
-            new_count += 1
-    db.log_audit("SEED_JOBS", f"Ingested {new_count} new candidate job records")
-    print(f"[Ingest] Successfully ingested {new_count} sample jobs.")
-
-
-def run_pipeline(upload_profile: Optional[str] = None, send_alerts: bool = True):
-    print("=" * 70)
-    print("CAREEROS: ULTIMATE AGENTIC JOB SEARCH & REASONING ENGINE")
-    print(f"Timestamp: {get_current_ist_timestamp()}")
-    print("=" * 70)
-
-    db = DatabaseManager()
-    profile_path = upload_profile or config.CANDIDATE_PROFILE_PATH
-    profile_text = CandidateVault.load_profile(profile_path)
-    print(f"[Vault] Candidate Profile loaded ({len(profile_text)} characters).")
-
-    # Seed samples if database is empty
-    with db.get_connection() as conn:
-        count = conn.execute("SELECT count(*) as c FROM jobs").fetchone()["c"]
-    if count == 0:
-        seed_sample_jobs(db)
-
-    # Scoring Stage
-    scorer = ScoringEngine()
-    unscored = db.get_unscored_jobs()
-    print(f"[Brain] Found {len(unscored)} unscored jobs. Evaluating...")
-
-    for row in unscored:
-        result = scorer.score_job(row, profile_text)
-        db.update_job_score(row["id"], result)
-        print(f" -> Evaluated ID {row['id']}: '{row['title']}' | Score: {result['score']} | {result['recommendation']}")
-
-    db.log_audit("SCORING_RUN", f"Scored {len(unscored)} jobs with Gemini/Heuristic Engine")
-
-    # Alert Stage (top-tier only, once per job)
-    if send_alerts:
-        dispatch_alerts(db)
-
-    # Export Stage
-    excel_path = ExcelReportGenerator.generate_digest(db)
-    print("=" * 70)
-    print(f"[SUCCESS] Excel Digest Generated: {excel_path}")
-    print("=" * 70)
-    return excel_path
-
-
-def main():
-    parser = argparse.ArgumentParser(description="CareerOS Ultimate Agentic Job Search Engine")
-    parser.add_argument("--profile", type=str, default=None, help="Path to uploaded candidate profile (.txt / .md)")
-    parser.add_argument("--seed", action="store_true", help="Seed representative job vacancies")
-    parser.add_argument("--export-only", action="store_true", help="Export existing DB to Excel without re-scoring")
-    parser.add_argument("--no-alerts", action="store_true", help="Skip Telegram alerts for this run")
-    parser.add_argument("--test-telegram", action="store_true", help="Send one test message to verify Telegram setup")
-    args = parser.parse_args()
-
-    if args.test_telegram:
-        ok = send_telegram_alert(
-            {"match_score": 99, "title": "Telegram Test Job", "company": "CareerOS",
-             "location": "Kolkata", "recommendation": "Apply Immediately",
-             "resume_tailor_tip": "If you can read this, alerts work.", "job_url": "https://example.com"},
-            config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
-        )
-        print("Telegram test:", "SENT" if ok else "FAILED (check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
-        return
-
-    db = DatabaseManager()
-    if args.seed:
-        seed_sample_jobs(db)
-    elif args.export_only:
-        p = ExcelReportGenerator.generate_digest(db)
-        print(f"Exported to {p}")
-    else:
-        run_pipeline(upload_profile=args.profile, send_alerts=not args.no_alerts)
-
-
-if __name__ == "__main__":
-    main()
+#!/usr/bin/env python3
+"""
+job_agent.py - resilient multi-portal cloud job discovery, scoring & digest pipeline.
+
+Stages (run all, or one with --stage):
+  init     create/verify/migrate SQLite schema (jobs + applications tables)
+  scrape   JobSpy boards -> jobs.db
+  ats      Greenhouse / Lever / Ashby boards -> jobs.db (needs slugs in .env)
+  remote   Worldwide remote feeds (remote_feeds.py) -> jobs.db
+  email    Gmail job-alert emails (IMAP) -> jobs.db
+  score    Prefilter + HTTP Liveness Gate + Gemini JSON scoring with failover & clone caching
+  digest   build Excel backup + email digest of new jobs scoring >= MIN score
+  excel    rebuild the Excel backup only (preserving user notes & syncing applications)
+  status   print database, applications & match statistics in the terminal
+
+Usage:
+  python job_agent.py                           # run full daily pipeline
+  python job_agent.py --stage score             # run a single stage
+  python job_agent.py --stage status            # inspect DB & top matches
+  python job_agent.py --stage score --max 25    # override max API calls for one run
+  python job_agent.py --track "Company | Title | applied | Optional note"
+"""
+
+import argparse
+import email as email_lib
+import hashlib
+import html
+import imaplib
+import os
+import re
+import smtplib
+import sqlite3
+import sys
+import time
+import truststore
+truststore.inject_into_ssl()
+from datetime import datetime, timedelta, timezone
+from email import encoders
+from email.header import decode_header
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import List, Literal, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
+
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+
+# Ensure Windows PowerShell & Task Scheduler log redirection never crash on Unicode symbols
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+load_dotenv(override=True)  # .env wins over stale system/user environment variables
+
+# ----------------------------------------------------------------------
+# CONFIG (all overridable in .env)
+# ----------------------------------------------------------------------
+DB_PATH = os.getenv("DB_PATH", "jobs.db")
+EXCEL_PATH = os.getenv("EXCEL_BACKUP_PATH", "cloud_jobs_backup.xlsx")
+PROFILE_PATH = os.getenv("PROFILE_PATH", "candidate_profile.txt")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
+_FALLBACK_RAW = os.getenv(
+    "GEMINI_FALLBACK_MODELS",
+    "gemini-flash-lite-latest,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-3-flash-preview",
+)
+MODEL_CHAIN: List[str] = []
+for _m in [GEMINI_MODEL] + [x.strip() for x in _FALLBACK_RAW.split(",") if x.strip()]:
+    if _m and _m not in MODEL_CHAIN:
+        MODEL_CHAIN.append(_m)
+
+# Optional free fallback provider (any OpenAI-compatible API: Groq, OpenRouter, local Ollama).
+# Used only after every Gemini model is out of quota. Leave FALLBACK_BASE_URL blank to disable.
+FALLBACK_BASE_URL = os.getenv("FALLBACK_BASE_URL", "").strip().rstrip("/")
+FALLBACK_API_KEY = os.getenv("FALLBACK_API_KEY", "").strip()
+FALLBACK_MODELS = [m.strip() for m in os.getenv("FALLBACK_MODELS", "").split(",") if m.strip()]
+
+RERANK_MODEL = os.getenv("RERANK_MODEL", "").strip()   # e.g. gemini-2.5-flash; blank = off
+RERANK_FROM = int(os.getenv("RERANK_FROM_SCORE", "50"))
+MIN_SCORE = int(os.getenv("MIN_EMAIL_MATCH_SCORE", "60"))
+MAX_SCORE_PER_RUN = int(os.getenv("MAX_SCORE_PER_RUN", "60"))
+MAX_SCORE_ATTEMPTS = int(os.getenv("MAX_SCORE_ATTEMPTS", "3"))
+SCORE_SLEEP_SEC = float(os.getenv("SCORE_SLEEP_SEC", "8"))
+LIVENESS_CHECK = os.getenv("LIVENESS_CHECK", "1").strip().lower() not in ("0", "false", "no")
+
+IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+IMAP_LOOKBACK_DAYS = int(os.getenv("IMAP_LOOKBACK_DAYS", "3"))
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "").strip()
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "").strip()
+RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "").strip() or EMAIL_ADDRESS
+
+_proxies = os.getenv("PROXIES", "").strip()
+PROXIES = [p.strip() for p in _proxies.split(",") if p.strip()] or None
+
+_DEFAULT_QUERIES = [
+    "Cloud Support Engineer AWS",
+    "Cloud Support Associate AWS",
+    "AWS Implementation Engineer",
+    "Technical Support Engineer Cloud SaaS",
+    "Cloud Operations NOC Engineer AWS",
+    "Junior Cloud Engineer AWS",
+]
+_env_queries = [q.strip() for q in os.getenv("SEARCH_QUERIES", "").split("|") if q.strip()]
+SEARCH_QUERIES = _env_queries or _DEFAULT_QUERIES
+
+_env_locs = [loc.strip() for loc in os.getenv("SEARCH_LOCATIONS", "").split("|") if loc.strip()]
+LOCATIONS = _env_locs or ["India", "Kolkata, India"]
+
+_env_sites = [s.strip() for s in os.getenv("SEARCH_SITES", "").split(",") if s.strip()]
+SITES = _env_sites or ["linkedin", "indeed", "naukri"]
+
+RESULTS_WANTED = int(os.getenv("RESULTS_WANTED", "12"))
+HOURS_OLD = int(os.getenv("HOURS_OLD", "72"))
+
+ATS_GREENHOUSE = [s.strip() for s in os.getenv("ATS_GREENHOUSE", "").split(",") if s.strip()]
+ATS_LEVER = [s.strip() for s in os.getenv("ATS_LEVER", "").split(",") if s.strip()]
+ATS_ASHBY = [s.strip() for s in os.getenv("ATS_ASHBY", "").split(",") if s.strip()]
+ATS_SMARTRECRUITERS = [s.strip() for s in os.getenv("ATS_SMARTRECRUITERS", "").split(",") if s.strip()]
+
+# Quota-saving heuristic filters (allow Solutions/Associate Architect & L1/L2 through)
+SENIOR_TITLE = re.compile(
+    r"\b(senior|sr\.?|lead|principal|staff|manager|head of|director|vp|vice president|avp)\b"
+    r"|\b(enterprise|chief|distinguished)\s+architect\b"
+    r"|\b(l3|l4|iii|iv)\b",
+    re.I,
+)
+NON_PAID_TITLE = re.compile(
+    r"\b(intern|internship|trainee|apprentice|unpaid|volunteer|stipend)\b", re.I)
+OFF_DOMAIN_TITLE = re.compile(
+    r"\b(data cent(?:er|re)|technician|program associate|sap|abap|peoplesoft|ukg|workday|mainframe|cobol|etrm|salesforce developer|"
+    r"ios developer|android developer|react native|angular developer|mlops)\b",
+    re.I,
+)
+HIGH_EXP_FIELD = re.compile(
+    r"^\s*(?:[6-9]|1\d)\s*(?:\+|-\s*\d+|\s+to\s+\d+)?\s*(?:years?|yrs?)\b"
+    r"|\b(director|executive)\b",
+    re.I,
+)
+HIGH_EXP_DESC = re.compile(
+    r"\b(?:minimum|at\s+least|require[sd]?|must\s+have)\s+(?:of\s+)?(?:[6-9]|1\d)\s*\+?\s*"
+    r"(?:years?|yrs?)\s+(?:of\s+)?(?:\w+\s+){0,3}experience\b",
+    re.I,
+)
+
+# Location rule: Kolkata = any work mode (onsite/hybrid/remote); rest of India = remote only
+KOLKATA_WORDS = ("kolkata", "calcutta", "west bengal", "howrah", "salt lake", "new town",
+                 "rajarhat", "sector v", "barasat", "durgapur", "wb,")
+REMOTE_PHRASES = ("remote", "work from home", "work-from-home", "wfh", "anywhere in india")
+HYBRID_ONLY = re.compile(r"\bhybrid\b", re.I)
+
+# HTTP Liveness Check patterns (from career-ops)
+DEAD_URL_PATTERNS = ("error=true", "job-closed", "expired", "not-found", "job_not_found")
+DEAD_PAGE_PATTERNS = re.compile(
+    r"(no longer accepting applications|"
+    r"this job (posting )?is no longer available|"
+    r"position has been filled|"
+    r"job you are looking for is no longer open|"
+    r"this position is closed|"
+    r"sorry, this job is expired|"
+    r"job posting has expired)",
+    re.I,
+)
+LIVENESS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
+
+def check_job_liveness(url: str, timeout: int = 8) -> Tuple[bool, str]:
+    """
+    Verifies if a job URL is live before spending Gemini quota.
+    Fails open (returns True) on 401/403/429/999 anti-bot walls or network timeouts
+    so valid LinkedIn/Indeed/Cloudflare postings are never discarded.
+    """
+    if not url or not url.startswith(("http://", "https://")) or _PRIVATE_HOST_RE.match(url):
+        return True, "no_http_url"
+    try:
+        import requests
+        resp = requests.get(url, headers=LIVENESS_HEADERS, timeout=timeout, allow_redirects=True)
+    except Exception as exc:
+        return True, f"network_skip:{type(exc).__name__}"
+
+    if resp.status_code in (404, 410):
+        return False, f"HTTP {resp.status_code}"
+
+    if resp.status_code in (401, 403, 429, 999) or resp.status_code >= 500:
+        return True, f"bot_or_server_skip:{resp.status_code}"
+
+    final_url = (resp.url or "").lower()
+    for pat in DEAD_URL_PATTERNS:
+        if pat in final_url:
+            return False, f"redirected to {pat}"
+
+    snippet = (resp.text or "")[:25000]
+    m = DEAD_PAGE_PATTERNS.search(snippet)
+    if m:
+        return False, f"closed banner ('{m.group(0).lower()}')"
+
+    return True, "alive"
+
+
+def location_ok(job: dict) -> bool:
+    if job.get("came_from_email"):
+        return True  # alert emails carry no real location; let the scorer judge
+    loc = (job.get("location") or "").lower().strip()
+    if loc in ("", "see listing"):
+        return True
+    if any(w in loc for w in KOLKATA_WORDS):
+        return True
+    if job.get("is_remote"):
+        return True
+    title = (job.get("title") or "").lower()
+    if any(w in loc or w in title for w in REMOTE_PHRASES):
+        return True
+    head = (job.get("description") or "")[:1500].lower()
+    if any(p in head for p in ("fully remote", "100% remote", "remote-first", "work from home",
+                               "remote position", "remote role", "this is a remote")):
+        return True
+    return False
+
+
+ALERT_SENDER_HINTS = (
+    "linkedin", "indeed", "naukri", "glassdoor", "hirist", "instahyre",
+    "wellfound", "foundit", "cutshort", "timesjobs", "amazon.jobs", "workday",
+    "greenhouse", "lever", "ashby",
+)
+ALERT_SUBJECT_HINTS = (
+    "job", "alert", "hiring", "cloud", "aws", "devops", "support engineer",
+    "noc", "implementation", "sre",
+)
+SKIP_ANCHORS = {
+    "unsubscribe", "privacy policy", "help", "manage alerts", "settings",
+    "view in browser", "see all jobs", "update your preferences", "terms",
+    "contact us", "email preferences",
+}
+GENERIC_ANCHORS = {
+    "listing", "view job", "view", "apply", "apply now", "see job", "view details", "job details",
+    "see details", "view this job", "view more", "easy apply", "click here", "here", "details",
+}
+
+
+def alert_title(text: str, ctx: str, subject: str) -> str:
+    """Anchor text like 'Listing' or 'View job' says nothing; use the surrounding text instead."""
+    t = (text or "").strip()
+    if t.lower() in GENERIC_ANCHORS or len(t) <= 4:
+        c = re.sub(r"\s+", " ", (ctx or "").replace(t, " ")).strip(" -|:\u00b7\u2022")
+        if len(c) >= 8:
+            return c[:110]
+        return f"Email alert role ({subject[:45]})"
+    return t[:150]
+
+
+JOB_LINK_RE = re.compile(
+    r"(linkedin\.com/(comm/)?jobs/view|indeed\.com/(rc/clk|viewjob|pagead/clk)|"
+    r"naukri\.com/job-listings|glassdoor\.[a-z.]+/(partner/jobListing|job-listing)|"
+    r"hirist\.(tech|com)/j/|instahyre\.com/job-|wellfound\.com/jobs|"
+    r"foundit\.in/job/|cutshort\.io/job/|timesjobs\.com/job-detail|"
+    r"amazon\.jobs/[a-z-]+/jobs/\d+|boards\.greenhouse\.io/[^/]+/jobs/\d+|"
+    r"jobs\.lever\.co/[^/]+/[0-9a-f-]{20,}|jobs\.ashbyhq\.com/[^/]+/[0-9a-f-]{16,}|"
+    r"myworkdayjobs\.com/.+/job/)",
+    re.I,
+)
+
+
+# ----------------------------------------------------------------------
+# HELPERS
+# ----------------------------------------------------------------------
+def now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def today_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def is_fresh(date_posted: str, hours_old: int = None) -> bool:
+    """Boards give a date, not a time, so allow ceil(hours/24)+0 whole days back. Unknown date = keep."""
+    hours_old = HOURS_OLD if hours_old is None else hours_old
+    try:
+        d = datetime.fromisoformat(str(date_posted).strip()[:10]).date()
+    except Exception:
+        return True
+    max_days = -(-hours_old // 24)  # ceil
+    return (datetime.now(timezone.utc).date() - d).days <= max_days
+
+
+def clean(val) -> str:
+    if val is None:
+        return ""
+    try:
+        if val != val:  # NaN
+            return ""
+    except Exception:
+        pass
+    s = str(val).strip()
+    return "" if s.lower() in {"nan", "none", "nat"} else s
+
+
+def canonical_key(url: str, title: str = "", company: str = "") -> str:
+    """Stable identity for a job. Indeed keeps ?jk= id; LinkedIn uses numeric job id."""
+    if not url:
+        return f"tc:{title.lower()}::{company.lower()}"
+    p = urlparse(url)
+    host = p.netloc.lower().replace("www.", "")
+    qs = parse_qs(p.query)
+    if "indeed." in host:
+        jk = (qs.get("jk") or qs.get("vjk") or [""])[0]
+        if jk:
+            return f"indeed:{jk}"
+    if "linkedin.com" in host:
+        m = re.search(r"/jobs/view/(?:[^/?]*-)?(\d{6,})", p.path)
+        if m:
+            return f"linkedin:{m.group(1)}"
+        cur = (qs.get("currentJobId") or [""])[0]
+        if cur:
+            return f"linkedin:{cur}"
+    if "naukri.com" in host:
+        m = re.search(r"-(\d{9,14})(?:\?|$|/)", url)
+        if m:
+            return f"naukri:{m.group(1)}"
+    path = p.path.rstrip("/")
+    if not path:
+        return f"{host}?{p.query}".lower()
+    return f"{host}{path}".lower()
+
+
+def job_hash(url: str, title: str = "", company: str = "") -> str:
+    return hashlib.sha256(canonical_key(url, title, company).encode()).hexdigest()
+
+
+def clone_signature(job: dict) -> Optional[str]:
+    """Fingerprint identical multi-city postings so Gemini only scores each unique JD once."""
+    desc = re.sub(r"\s+", " ", (job.get("description") or "")).strip().lower()
+    if len(desc) < 120:
+        return None
+    title = re.sub(r"\s+", " ", (job.get("title") or "")).strip().lower()
+    company = re.sub(r"\s+", " ", (job.get("company") or "")).strip().lower()
+    raw = f"{title}||{company}||{desc[:500]}"
+    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+JOB_COLS = (
+    "job_hash", "title", "company", "location", "experience", "job_type", "is_remote",
+    "date_posted", "description", "job_url", "job_url_direct", "company_url",
+    "source_channel", "source_site", "came_from_email",
+    "source_email_sender", "source_email_subject", "source_email_date",
+)
+
+
+# ----------------------------------------------------------------------
+# APPLIED-JOB MEMORY & `applications` TABLE
+# ----------------------------------------------------------------------
+APPLIED_NOTE_RE = re.compile(os.getenv("APPLIED_NOTE_REGEX", r"appl|interview|reject|offer|skip"), re.I)
+
+_COMPANY_NOISE = {
+    "pvt", "ltd", "private", "limited", "inc", "llc", "llp", "corp", "corporation", "co",
+    "india", "the", "technologies", "technology", "solutions", "services", "systems", "global",
+}
+_TITLE_NOISE = {
+    "remote", "hybrid", "onsite", "wfh", "india", "kolkata", "calcutta", "bengaluru", "bangalore",
+    "hyderabad", "pune", "mumbai", "chennai", "delhi", "ncr", "gurgaon", "gurugram", "noida",
+    "urgent", "hiring", "opening", "immediate", "joiner", "joiners",
+}
+
+
+def _norm_tokens(text: str, noise: set) -> str:
+    text = re.sub(r"[\(\[\{][^\)\]\}]*[\)\]\}]", " ", (text or "").lower())  # drop (Remote), [Kolkata]
+    text = re.sub(r"[^a-z0-9+#]+", " ", text)
+    return " ".join(t for t in text.split() if t not in noise)
+
+
+def applied_key(title: str, company: str) -> Optional[str]:
+    """Site-independent identity: normalised company + title. None when the company is unknown."""
+    comp_raw = (company or "").strip().lower()
+    if not comp_raw or comp_raw.startswith("via ") or comp_raw == "unknown company":
+        return None
+    comp = _norm_tokens(company, _COMPANY_NOISE)
+    ttl = _norm_tokens(title, _TITLE_NOISE)
+    if not comp or not ttl:
+        return None
+    return f"{comp}||{ttl}"
+
+
+def note_is_applied(note: str) -> bool:
+    return bool(note and note.strip() and note.strip() != "-" and APPLIED_NOTE_RE.search(note))
+
+
+def _infer_status_from_note(note: str) -> str:
+    n = (note or "").lower()
+    if "offer" in n:
+        return "offer"
+    if "interview" in n:
+        return "interviewing"
+    if any(w in n for w in ("reject", "declin", "not selected")):
+        return "rejected"
+    if "skip" in n:
+        return "skip"
+    return "applied"
+
+
+def sync_applications_from_jobs(conn: sqlite3.Connection) -> int:
+    """
+    Ensures any row in `jobs` with an application note in `user_notes`
+    is mirrored into the structured `applications` table.
+    """
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='applications'")
+    if not cur.fetchone():
+        return 0
+
+    rows = conn.execute(
+        "SELECT title, company, COALESCE(NULLIF(job_url_direct, ''), job_url) AS url, user_notes "
+        "FROM jobs WHERE TRIM(COALESCE(user_notes, '')) != ''"
+    ).fetchall()
+    synced = 0
+    today = today_iso()
+    default_fup = (datetime.now(timezone.utc) + timedelta(days=6)).strftime("%Y-%m-%d")
+
+    for r in rows:
+        note = (r["user_notes"] or "").strip()
+        if not note_is_applied(note):
+            continue
+        k = applied_key(r["title"], r["company"])
+        if not k:
+            continue
+        status = _infer_status_from_note(note)
+        fup = default_fup if status == "applied" else ""
+        conn.execute(
+            """
+            INSERT INTO applications (app_key, company, title, job_url, status, applied_date, follow_up_date, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(app_key) DO UPDATE SET
+                status = excluded.status,
+                notes = excluded.notes,
+                job_url = COALESCE(NULLIF(excluded.job_url, ''), applications.job_url),
+                updated_at = excluded.updated_at
+            """,
+            (k, r["company"] or "", r["title"] or "", r["url"] or "", status, today, fup, note, now_utc()),
+        )
+        synced += 1
+    conn.commit()
+    return synced
+
+
+def upsert_application(
+    db_path: str,
+    company: str,
+    title: str,
+    status: str = "applied",
+    job_url: str = "",
+    follow_up_date: str = "",
+    notes: str = "",
+) -> Optional[str]:
+    """Directly insert or update a tracked application in the `applications` table."""
+    stage_init(db_path)
+    k = applied_key(title, company)
+    if not k:
+        k = f"{(company or 'unknown').strip().lower()}||{(title or 'untitled').strip().lower()}"
+    today = today_iso()
+    if not follow_up_date and status.lower() == "applied":
+        follow_up_date = (datetime.now(timezone.utc) + timedelta(days=6)).strftime("%Y-%m-%d")
+
+    conn = get_conn(db_path)
+    conn.execute(
+        """
+        INSERT INTO applications (app_key, company, title, job_url, status, applied_date, follow_up_date, notes, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(app_key) DO UPDATE SET
+            status = excluded.status,
+            job_url = COALESCE(NULLIF(excluded.job_url, ''), applications.job_url),
+            follow_up_date = COALESCE(NULLIF(excluded.follow_up_date, ''), applications.follow_up_date),
+            notes = COALESCE(NULLIF(excluded.notes, ''), applications.notes),
+            updated_at = excluded.updated_at
+        """,
+        (k, company.strip(), title.strip(), job_url.strip(), status.strip().lower(), today, follow_up_date, notes.strip(), now_utc()),
+    )
+    conn.commit()
+    conn.close()
+    return k
+
+
+def load_applied_keys(conn: sqlite3.Connection) -> set:
+    keys = set()
+    for r in conn.execute("SELECT title, company, user_notes FROM jobs "
+                          "WHERE TRIM(COALESCE(user_notes,'')) != ''"):
+        if note_is_applied(r["user_notes"]):
+            k = applied_key(r["title"], r["company"])
+            if k:
+                keys.add(k)
+    try:
+        for r in conn.execute(
+            "SELECT app_key, title, company FROM applications "
+            "WHERE status IN ('applied', 'interviewing', 'rejected', 'offer', 'skip')"
+        ):
+            if r["app_key"]:
+                keys.add(r["app_key"])
+            k2 = applied_key(r["title"], r["company"])
+            if k2:
+                keys.add(k2)
+    except sqlite3.Error:
+        pass
+    return keys
+
+
+def is_applied_duplicate(job: dict, applied_keys: set) -> bool:
+    """True if this row is itself marked applied, or matches an applied job from any site."""
+    if note_is_applied(job.get("user_notes") or ""):
+        return True
+    k = applied_key(job.get("title"), job.get("company"))
+    return bool(k and k in applied_keys)
+
+
+_APPLIED_CACHE: dict = {"keys": set()}
+
+
+def refresh_applied_cache(db_path: str = DB_PATH) -> int:
+    """Reload applied keys so insert_job can skip them. Called at the start of each inserting stage."""
+    try:
+        conn = get_conn(db_path)
+        try:
+            _APPLIED_CACHE["keys"] = load_applied_keys(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        _APPLIED_CACHE["keys"] = set()
+    return len(_APPLIED_CACHE["keys"])
+
+
+def insert_job(cur: sqlite3.Cursor, **f) -> bool:
+    k = applied_key(f.get("title", ""), f.get("company", ""))
+    if k and k in _APPLIED_CACHE["keys"]:
+        return False  # same company+title already applied on another site
+    vals = [f.get(c, "" if c not in ("is_remote", "came_from_email") else 0) for c in JOB_COLS]
+    cur.execute(
+        f"INSERT OR IGNORE INTO jobs ({','.join(JOB_COLS)}) VALUES ({','.join('?' * len(JOB_COLS))})",
+        vals,
+    )
+    return cur.rowcount > 0
+
+
+# ----------------------------------------------------------------------
+# STAGE: INIT
+# ----------------------------------------------------------------------
+def stage_init(db_path: str = DB_PATH) -> None:
+    conn = get_conn(db_path)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_hash TEXT UNIQUE NOT NULL,
+        title TEXT NOT NULL, company TEXT, location TEXT, experience TEXT, job_type TEXT,
+        is_remote INTEGER DEFAULT 0, date_posted TEXT, description TEXT,
+        job_url TEXT NOT NULL, job_url_direct TEXT, company_url TEXT,
+        source_channel TEXT NOT NULL, source_site TEXT,
+        came_from_email INTEGER DEFAULT 0,
+        source_email_sender TEXT, source_email_subject TEXT, source_email_date TEXT,
+        scored INTEGER DEFAULT 0, match_score INTEGER, priority TEXT, fit_reason TEXT,
+        missing_skills TEXT, recommendation TEXT, resume_tip TEXT DEFAULT '',
+        scored_model TEXT DEFAULT '', scored_at TEXT,
+        emailed_in_digest INTEGER DEFAULT 0, emailed_at TEXT,
+        user_notes TEXT DEFAULT '',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    if "score_attempts" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN score_attempts INTEGER DEFAULT 0")
+    for col_name in ("user_notes", "resume_tip", "scored_model", "cover_letter", "star_story"):
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} TEXT DEFAULT ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_scored ON jobs(scored)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_emailed ON jobs(emailed_in_digest, match_score)")
+
+    # New structured `applications` table (from career-ops architecture)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS applications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        app_key TEXT UNIQUE NOT NULL,
+        company TEXT NOT NULL,
+        title TEXT NOT NULL,
+        job_url TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'applied',
+        applied_date TEXT NOT NULL,
+        follow_up_date TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_applications_key ON applications(app_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)")
+    sync_applications_from_jobs(conn)
+
+    conn.commit()
+    conn.close()
+    print(f"[init] database ready at {db_path} (jobs + applications tables verified)")
+
+
+# ----------------------------------------------------------------------
+# STAGE: SCRAPE (JobSpy)
+# ----------------------------------------------------------------------
+def stage_scrape(db_path: str = DB_PATH) -> int:
+    try:
+        from jobspy import scrape_jobs
+    except ImportError:
+        print("[scrape] python-jobspy not installed; skipping.")
+        return 0
+
+    import inspect
+
+    # JobSpy renamed linkedin_fetch_description -> fetch_description; use whichever this install has.
+    try:
+        _params = inspect.signature(scrape_jobs).parameters
+    except (TypeError, ValueError):
+        _params = {}
+    if "fetch_description" in _params:
+        desc_kw = {"fetch_description": True}
+    elif "linkedin_fetch_description" in _params or not _params:
+        desc_kw = {"linkedin_fetch_description": True}
+    else:
+        desc_kw = {}
+
+    n_applied = refresh_applied_cache(db_path)
+    if n_applied:
+        print(f"[scrape] {n_applied} applied job(s) on file; same company+title will be skipped on any site")
+
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    added = 0
+    for query in SEARCH_QUERIES:
+        for location in LOCATIONS:
+            print(f"[scrape] '{query}' / '{location}' on {SITES}")
+            india_wide = location.strip().lower() == "india"  # outside Kolkata we only want remote roles
+            other_sites = [s for s in SITES if s.lower() != "indeed"]
+            has_indeed = any(s.lower() == "indeed" for s in SITES)
+            base = dict(search_term=query, location=location, results_wanted=RESULTS_WANTED,
+                        country_indeed="India", verbose=0, **desc_kw)
+            if PROXIES:
+                base["proxies"] = PROXIES
+
+            # Indeed accepts only ONE of: hours_old | (job_type + is_remote) | easy_apply per search,
+            # so it gets its own calls. LinkedIn/Naukri etc. keep both filters together.
+            calls = []
+            if other_sites:
+                kw = dict(base, site_name=other_sites, hours_old=HOURS_OLD)
+                if india_wide:
+                    kw["is_remote"] = True
+                calls.append(("other", kw))
+            if has_indeed:
+                calls.append(("indeed", dict(base, site_name=["indeed"], hours_old=HOURS_OLD)))
+                if india_wide:
+                    # remote-only pass, no hours_old; freshness is enforced locally by is_fresh()
+                    calls.append(("indeed-remote", dict(base, site_name=["indeed"], is_remote=True)))
+
+            for label, kwargs in calls:
+                try:
+                    df = scrape_jobs(**kwargs)
+                except Exception as exc:
+                    print(f"[scrape] WARNING {query}/{location} ({label}): {exc}")
+                    continue
+                if df is None or df.empty:
+                    continue
+                batch_added = stale = 0
+                for _, row in df.iterrows():
+                    url = clean(row.get("job_url"))
+                    if not url:
+                        continue
+                    if not is_fresh(clean(row.get("date_posted"))):
+                        stale += 1
+                        continue
+                    title = clean(row.get("title")) or "Untitled role"
+                    company = clean(row.get("company")) or "Unknown company"
+                    ok = insert_job(
+                        cur,
+                        job_hash=job_hash(url, title, company), title=title, company=company,
+                        location=clean(row.get("location")) or location,
+                        experience=clean(row.get("job_level")) or clean(row.get("experience_range")),
+                        job_type=clean(row.get("job_type")),
+                        is_remote=1 if row.get("is_remote") is True else 0,
+                        date_posted=clean(row.get("date_posted")),
+                        description=clean(row.get("description")),
+                        job_url=url, job_url_direct=clean(row.get("job_url_direct")) or url,
+                        company_url=clean(row.get("company_url")),
+                        source_channel="JobSpy Scraper", source_site=clean(row.get("site")) or "jobspy",
+                    )
+                    batch_added += int(ok)
+                added += batch_added
+                if stale:
+                    print(f"[scrape]   {label}: skipped {stale} older than {HOURS_OLD}h")
+                conn.commit()
+                time.sleep(3)
+    conn.close()
+    print(f"[scrape] {added} new job(s)")
+    return added
+
+
+# ----------------------------------------------------------------------
+# STAGE: ATS (Greenhouse / Lever / Ashby direct feeds)
+# ----------------------------------------------------------------------
+INDIA_WORDS = (
+    "india", "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "gurgaon",
+    "gurugram", "noida", "chennai", "kolkata", "remote", "apac", "anywhere",
+)
+ROLE_WORDS = (
+    "aws", "cloud", "support", "implementation", "devops", "operations", "sre",
+    "noc", "infrastructure", "onboarding", "platform", "reliability",
+)
+
+
+def stage_ats(db_path: str = DB_PATH) -> int:
+    if not (ATS_GREENHOUSE or ATS_LEVER or ATS_ASHBY or ATS_SMARTRECRUITERS):
+        print("[ats] no ATS_GREENHOUSE / ATS_LEVER / ATS_ASHBY slugs set; skipping.")
+        return 0
+    import requests
+    from bs4 import BeautifulSoup
+
+    def relevant(title: str, loc: str) -> bool:
+        t, l = title.lower(), loc.lower()
+        return any(w in t for w in ROLE_WORDS) and any(w in l for w in INDIA_WORDS)
+
+    refresh_applied_cache(db_path)
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    added = 0
+
+    # 1. Greenhouse
+    for slug in ATS_GREENHOUSE:
+        try:
+            r = requests.get(
+                f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
+                timeout=15,
+            )
+            if r.status_code != 200:
+                print(f"[ats] greenhouse '{slug}' -> HTTP {r.status_code} (check slug)")
+                continue
+            for j in r.json().get("jobs", []):
+                title, loc = j.get("title", ""), (j.get("location") or {}).get("name", "")
+                url = j.get("absolute_url", "")
+                if not url or not relevant(title, loc):
+                    continue
+                desc = BeautifulSoup(html.unescape(j.get("content", "")), "html.parser").get_text(" ", strip=True)
+                added += int(insert_job(
+                    cur, job_hash=job_hash(url), title=title, company=slug.title(), location=loc,
+                    is_remote=1 if "remote" in loc.lower() else 0,
+                    description=desc, job_url=url, job_url_direct=url,
+                    company_url=f"https://boards.greenhouse.io/{slug}",
+                    date_posted=j.get("updated_at", ""),
+                    source_channel="Direct ATS", source_site="greenhouse",
+                ))
+        except Exception as exc:
+            print(f"[ats] greenhouse '{slug}': {exc}")
+
+    # 2. Lever
+    for slug in ATS_LEVER:
+        try:
+            r = requests.get(f"https://api.lever.co/v0/postings/{slug}?mode=json", timeout=15)
+            if r.status_code != 200:
+                print(f"[ats] lever '{slug}' -> HTTP {r.status_code} (check slug)")
+                continue
+            for j in r.json():
+                title = j.get("text", "")
+                loc = (j.get("categories") or {}).get("location", "") or ""
+                url = j.get("hostedUrl", "")
+                if not url or not relevant(title, loc):
+                    continue
+                added += int(insert_job(
+                    cur, job_hash=job_hash(url), title=title, company=slug.title(), location=loc,
+                    is_remote=1 if "remote" in loc.lower() else 0,
+                    description=j.get("descriptionPlain", ""), job_url=url,
+                    job_url_direct=j.get("applyUrl", url),
+                    company_url=f"https://jobs.lever.co/{slug}",
+                    source_channel="Direct ATS", source_site="lever",
+                ))
+        except Exception as exc:
+            print(f"[ats] lever '{slug}': {exc}")
+
+    # 3. Ashby HQ (public JSON posting API)
+    for slug in ATS_ASHBY:
+        try:
+            r = requests.get(
+                f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true",
+                timeout=15,
+            )
+            if r.status_code != 200:
+                print(f"[ats] ashby '{slug}' -> HTTP {r.status_code} (check slug)")
+                continue
+            for j in r.json().get("jobs", []):
+                if not j.get("isListed", True):
+                    continue
+                title = (j.get("title") or "").strip()
+                sec_locs = [
+                    loc_obj.get("location", "")
+                    for loc_obj in (j.get("secondaryLocations") or [])
+                    if isinstance(loc_obj, dict) and loc_obj.get("location")
+                ]
+                primary_loc = j.get("location") or ""
+                loc = ", ".join(filter(None, [primary_loc, *sec_locs]))
+                is_rem = bool(j.get("isRemote")) or "remote" in loc.lower()
+                if is_rem and "remote" not in loc.lower():
+                    loc = f"{loc} (Remote)".strip()
+                url = j.get("jobUrl") or j.get("applyUrl") or ""
+                if not url or not relevant(title, loc):
+                    continue
+                desc = j.get("descriptionPlain") or ""
+                if not desc and j.get("descriptionHtml"):
+                    desc = BeautifulSoup(html.unescape(j["descriptionHtml"]), "html.parser").get_text(" ", strip=True)
+                added += int(insert_job(
+                    cur, job_hash=job_hash(url), title=title,
+                    company=slug.replace("-", " ").title(), location=loc,
+                    is_remote=1 if is_rem else 0,
+                    date_posted=j.get("publishedAt", ""),
+                    description=desc, job_url=url,
+                    job_url_direct=j.get("applyUrl") or url,
+                    company_url=f"https://jobs.ashbyhq.com/{slug}",
+                    source_channel="Direct ATS", source_site="ashby",
+                ))
+        except Exception as exc:
+            print(f"[ats] ashby '{slug}': {exc}")
+
+    # 4. SmartRecruiters (public Posting API)
+    for slug in ATS_SMARTRECRUITERS:
+        try:
+            r = requests.get(
+                f"https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100",
+                timeout=15,
+            )
+            if r.status_code != 200:
+                print(f"[ats] smartrecruiters '{slug}' -> HTTP {r.status_code} (check slug)")
+                continue
+            for j in r.json().get("content", []):
+                title = (j.get("name") or "").strip()
+                loc_obj = j.get("location") or {}
+                loc = ", ".join(filter(None, [loc_obj.get("city", ""), loc_obj.get("country", "")]))
+                is_rem = bool(loc_obj.get("remote")) or "remote" in loc.lower()
+                if is_rem and "remote" not in loc.lower():
+                    loc = f"{loc} (Remote)".strip()
+                if not relevant(title, loc):
+                    continue
+                pid = j.get("id") or ""
+                url = f"https://jobs.smartrecruiters.com/{slug}/{pid}" if pid else ""
+                if not url:
+                    continue
+                desc = title
+                if j.get("ref"):
+                    try:
+                        d_resp = requests.get(j["ref"], timeout=10).json()
+                        secs = ((d_resp.get("jobAd") or {}).get("sections") or {})
+                        raw_html = " ".join(
+                            (secs.get(k) or {}).get("text", "")
+                            for k in ("companyDescription", "jobDescription", "qualifications", "additionalInformation")
+                        )
+                        if raw_html.strip():
+                            desc = BeautifulSoup(html.unescape(raw_html), "html.parser").get_text(" ", strip=True)
+                        url = d_resp.get("postingUrl") or d_resp.get("applyUrl") or url
+                    except Exception:
+                        pass
+                added += int(insert_job(
+                    cur, job_hash=job_hash(url), title=title,
+                    company=(j.get("company") or {}).get("name") or slug.title(),
+                    location=loc, is_remote=1 if is_rem else 0,
+                    date_posted=(j.get("releasedDate") or "")[:10],
+                    description=desc, job_url=url, job_url_direct=url,
+                    company_url=f"https://careers.smartrecruiters.com/{slug}",
+                    source_channel="Direct ATS", source_site="smartrecruiters",
+                ))
+        except Exception as exc:
+            print(f"[ats] smartrecruiters '{slug}': {exc}")
+
+    conn.commit()
+    conn.close()
+    print(f"[ats] {added} new job(s)")
+    return added
+
+
+# ----------------------------------------------------------------------
+# STAGE: EMAIL (IMAP)
+# ----------------------------------------------------------------------
+def decode_mime(val: str) -> str:
+    if not val:
+        return ""
+    out = []
+    for part, enc in decode_header(val):
+        out.append(part.decode(enc or "utf-8", errors="replace") if isinstance(part, bytes) else str(part))
+    return "".join(out).strip()
+
+
+def email_body(msg) -> str:
+    html_part, text_part = "", ""
+    for part in (msg.walk() if msg.is_multipart() else [msg]):
+        if "attachment" in str(part.get("Content-Disposition") or ""):
+            continue
+        ctype = part.get_content_type()
+        if ctype not in ("text/html", "text/plain"):
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        if ctype == "text/html":
+            html_part += text
+        else:
+            text_part += text
+    return html_part or text_part
+
+
+def parse_alert_message(msg) -> List[dict]:
+    """Pure function: email.Message -> list of job dicts. Testable offline without Gmail."""
+    from bs4 import BeautifulSoup
+
+    subject = decode_mime(msg.get("Subject", ""))
+    sender = decode_mime(msg.get("From", ""))
+    date = decode_mime(msg.get("Date", ""))
+    s_low, sub_low = sender.lower(), subject.lower()
+    if not (any(h in s_low for h in ALERT_SENDER_HINTS) or any(h in sub_low for h in ALERT_SUBJECT_HINTS)):
+        return []
+    body = email_body(msg)
+    if not body:
+        return []
+    soup = BeautifulSoup(body, "html.parser")
+    summary = soup.get_text(" ", strip=True)[:3000]
+    jobs, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        href, text = a["href"].strip(), a.get_text(" ", strip=True)
+        if not href.startswith("http") or text.lower() in SKIP_ANCHORS:
+            continue
+        if not JOB_LINK_RE.search(href):
+            continue
+        key = job_hash(href)
+        if key in seen:
+            continue
+        seen.add(key)
+        domain = urlparse(href).netloc.replace("www.", "")
+        ctx = a.parent.get_text(" ", strip=True) if a.parent else ""
+        jobs.append(dict(
+            job_hash=key,
+            title=alert_title(text, ctx, subject),
+            company=f"Via {domain}", location="See listing", experience="See listing",
+            job_type="", is_remote=1 if "remote" in ctx.lower() else 0, date_posted=date,
+            description=(f"From email alert.\nSubject: {subject}\nSender: {sender}\n"
+                         f"Context: {ctx}\n\nEmail text:\n{summary}"),
+            job_url=href, job_url_direct=href, company_url=f"https://{domain}",
+            source_channel="Email Alert (IMAP)", source_site=domain, came_from_email=1,
+            source_email_sender=sender, source_email_subject=subject, source_email_date=date,
+        ))
+    return jobs
+
+
+def stage_email(db_path: str = DB_PATH) -> int:
+    if not (EMAIL_ADDRESS and EMAIL_PASSWORD):
+        print("[email] EMAIL_ADDRESS/EMAIL_PASSWORD not set; skipping.")
+        return 0
+    refresh_applied_cache(db_path)
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    added = 0
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        mail.select("INBOX")
+        since = (datetime.now() - timedelta(days=IMAP_LOOKBACK_DAYS)).strftime("%d-%b-%Y")
+        status, data = mail.search(None, f"(UNSEEN SINCE {since})")
+        ids = data[0].split() if status == "OK" and data and data[0] else []
+        print(f"[email] {len(ids)} unread message(s) in last {IMAP_LOOKBACK_DAYS} day(s)")
+        for e_id in ids:
+            res, msg_data = mail.fetch(e_id, "(BODY.PEEK[])")
+            if res != "OK":
+                continue
+            for part in msg_data:
+                if not isinstance(part, tuple):
+                    continue
+                found = parse_alert_message(email_lib.message_from_bytes(part[1]))
+                for job in found:
+                    added += int(insert_job(cur, **job))
+                if found:
+                    mail.store(e_id, "+FLAGS", "\\Seen")
+        conn.commit()
+        mail.logout()
+    except Exception as exc:
+        print(f"[email] WARNING: {exc}")
+    finally:
+        conn.close()
+    print(f"[email] {added} new job(s) from alerts")
+    return added
+
+
+# ----------------------------------------------------------------------
+# STAGE: SCORE (Prefilter + Liveness Gate + Gemini Evidence Scorer)
+# ----------------------------------------------------------------------
+class JobMatch(BaseModel):
+    match_score: int = Field(description="Fit score 0-100 for this candidate.")
+    priority: Literal["High", "Medium", "Low"]
+    fit_reason: str = Field(
+        description="1-2 sentences explaining fit, quoting a short key phrase from the JD as evidence."
+    )
+    missing_skills: List[str] = Field(description="Required skills from the JD that the candidate lacks.")
+    recommendation: Literal["Apply now", "Maybe", "Skip"]
+    resume_tip: str = Field(
+        default="",
+        description="If match_score >= 55, one concise tip on which candidate project/skill to highlight; else empty string.",
+    )
+    cover_letter: str = Field(
+        default="",
+        description="If match_score >= 70, a tailored, ready-to-send 3-paragraph cover letter referencing real projects; else empty string.",
+    )
+    star_story: str = Field(
+        default="",
+        description="If match_score >= 70, one STAR-format talking point (Situation, Task, Action, Result) from candidate background; else empty string.",
+    )
+
+
+DEFAULT_PROFILE = """\
+EDIT candidate_profile.txt - this is only a placeholder.
+Entry-level cloud candidate, no professional cloud job yet. Studying AWS SAA-C03."""
+
+
+def load_profile() -> str:
+    if os.path.exists(PROFILE_PATH):
+        with open(PROFILE_PATH, encoding="utf-8") as f:
+            return f.read().strip()
+    return DEFAULT_PROFILE
+
+
+
+_PROMPT_INJECTION_RE = re.compile(
+    r"(?:ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions|"
+    r"system\s*prompt|you\s+are\s+now\s+a|disregard\s+all\s+rules|"
+    r"score\s+this\s+job\s+100|match_score\s*[:=]\s*100)",
+    re.I,
+)
+_PRIVATE_HOST_RE = re.compile(
+    r"^https?://(?:localhost|127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|0\.0\.0\.0)",
+    re.I,
+)
+
+def sanitize_untrusted_jd(text: str) -> str:
+    """Strips control chars and prompt-injection attempts from scraped job descriptions."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", str(text))
+    return _PROMPT_INJECTION_RE.sub("[filtered-instruction]", cleaned)
+
+def build_prompt(job: dict, profile: str) -> str:
+    return f"""You are an accurate, honest technical recruiter screening jobs for an entry-level / career-transitioning cloud candidate in India.
+Evaluate the job strictly against the CANDIDATE PROFILE below using a two-stage gate + evidence rubric:
+
+STAGE 1 - HARD DEALBREAKER GATE (Score 0-25 / Low / Skip if violated):
+- Explicitly requires US/EU/non-Indian citizenship or security clearance with no India option.
+- Explicitly requires 5+ years of mandatory corporate DevOps/Cloud production experience.
+- On-site/Hybrid role outside Kolkata/West Bengal (unless the JD allows remote/WFH in India).
+Note: Silence in a short JD is NEVER a dealbreaker.
+
+STAGE 2 - ANCHORED SCORING RUBRIC:
+- 80-100 (High / Apply now): Strong match for 0-2 yr Cloud Support (L1/L2), AWS Support/Associate, CloudOps/NOC/GOC, Implementation Specialist, or Cloud/SaaS Technical Support using AWS, Linux, SQL/PostgreSQL, networking, or API/webhook troubleshooting.
+- 60-79 (Medium / Apply now or Maybe): Worth applying. Core responsibilities align (support, operations, implementation, junior SRE/cloud), even if 1-2 secondary tools are missing or experience asks ~2-3 years.
+- 40-59 (Low / Maybe): Partial overlap (e.g., Windows-heavy L2 support, Azure/GCP-only focus, or 3-4 yrs experience with steep tooling gaps).
+- 0-39 (Low / Skip): Fails Stage 1 Gate, requires expert production Kubernetes/OpenShift/MLOps, pure software engineering from scratch, or unrelated domains.
+
+STRICT EVIDENCE RULES:
+1. Credit ONLY skills, labs, degrees, and live self-employed experience explicitly written in the profile. Never invent skills.
+2. In `fit_reason`, include a short direct quote from the JD (in single quotes) showing the core requirement that drove your score.
+3. Fairly value the candidate's live production webhook/PostgreSQL system (LegacyLens), ap-south-1 2-AZ Terraform/ECS/RDS lab, Linux/network diagnostics, B.Sc. degree, and 14 years of client-facing delivery when evaluating support, NOC/GOC, and implementation roles.
+4. If the description is only a short email alert snippet with sparse detail, score conservatively on title/company/location and state that in `fit_reason` without guessing hidden requirements.
+5. Populate `resume_tip` with a 1-sentence pitch angle when match_score >= 55 (otherwise "").
+6. Leave `cover_letter` and `star_story` as "" during bulk scoring (they are generated in full by resume_tailor.py for top matches).
+
+CANDIDATE PROFILE:
+{profile}
+
+JOB LISTING:
+Title: {job.get('title', '')}
+Company: {job.get('company', '')}
+Location: {job.get('location', '')}
+Experience: {job.get('experience', '')}
+Remote: {'Yes' if job.get('is_remote') else 'Unspecified'}
+Source: {job.get('source_channel', '')} ({job.get('source_site', '')})
+Description:
+{(job.get('description') or '')[:6500]}"""
+
+
+def score_single_job(client, job: dict, profile: str, model_name: str = None) -> JobMatch:
+    from google.genai import types
+
+    resp = client.models.generate_content(
+        model=model_name or GEMINI_MODEL,
+        contents=build_prompt(job, profile),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=JobMatch,
+            temperature=0.15,
+        ),
+    )
+    result = JobMatch.model_validate_json(resp.text)
+    result.match_score = max(0, min(100, result.match_score))
+    return result
+
+
+def score_via_openai_compat(job: dict, profile: str, base_url: str, api_key: str, model: str) -> JobMatch:
+    """Score one job through any OpenAI-compatible /chat/completions endpoint."""
+    import requests
+
+    schema_hint = (
+        "\n\nReply with ONLY one JSON object, no markdown, with exactly these keys: "
+        '"match_score" (integer 0-100), "priority" ("High"|"Medium"|"Low"), "fit_reason" (string), '
+        '"missing_skills" (array of strings), "recommendation" ("Apply now"|"Maybe"|"Skip"), '
+        '"resume_tip" (string, empty if match_score < 55).'
+    )
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": build_prompt(job, profile) + schema_hint}],
+        "temperature": 0.15,
+        "response_format": {"type": "json_object"},
+    }
+    r = requests.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=90)
+    if r.status_code != 200:
+        raise RuntimeError(f"{r.status_code} fallback provider: {r.text[:200]}")
+    text = r.json()["choices"][0]["message"]["content"] or ""
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    m = re.search(r"\{.*\}", text, re.S)
+    result = JobMatch.model_validate_json(m.group(0) if m else text)
+    result.match_score = max(0, min(100, result.match_score))
+    return result
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    s = str(exc)
+    return (
+        "API_KEY_INVALID" in s or "API key not valid" in s or "PERMISSION_DENIED" in s
+        or "UNAUTHENTICATED" in s or s.startswith("401") or s.startswith("403")
+    )
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    s = str(exc)
+    return any(
+        tok in s for tok in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "DEADLINE_EXCEEDED")
+    ) or "quota" in s.lower() or "overloaded" in s.lower()
+
+
+def _parse_retry_seconds(exc: Exception) -> Optional[int]:
+    s = str(exc)
+    m_hr = re.search(r"retry in\s*(\d+)h", s, re.I)
+    if m_hr:
+        return int(m_hr.group(1)) * 3600
+    m_delay = re.search(r"retryDelay['\"]?\s*:\s*['\"](\d+)s['\"]", s)
+    if m_delay:
+        return int(m_delay.group(1))
+    m_sec = re.search(r"retry in\s*(\d+(?:\.\d+)?)s", s, re.I)
+    if m_sec:
+        return int(float(m_sec.group(1))) + 1
+    return None
+
+
+def _is_daily_quota_error(exc: Exception) -> bool:
+    s = str(exc)
+    if "PerDay" in s or "requests per day" in s.lower():
+        return True
+    delay = _parse_retry_seconds(exc)
+    return delay is not None and delay >= 300
+
+
+def _prefilter_reason(job: dict) -> Optional[str]:
+    title = job.get("title") or ""
+    exp = job.get("experience") or ""
+    desc = job.get("description") or ""
+    if SENIOR_TITLE.search(title):
+        return "Auto-skipped: senior/lead/L3+ title."
+    if NON_PAID_TITLE.search(title) or NON_PAID_TITLE.search(exp):
+        return "Auto-skipped: intern/trainee/unpaid role (profile wants paid full-time)."
+    if OFF_DOMAIN_TITLE.search(title):
+        return "Auto-skipped: off-domain role title."
+    if not location_ok(job):
+        return "Auto-skipped: outside Kolkata and not remote."
+    if HIGH_EXP_FIELD.search(exp) or HIGH_EXP_DESC.search(desc[:3000]):
+        return "Auto-skipped: requires 6+ years experience."
+    return None
+
+
+def _load_clone_cache(conn: sqlite3.Connection) -> dict:
+    cache = {}
+    rows = conn.execute(
+        "SELECT title, company, description, match_score, priority, fit_reason, "
+        "missing_skills, recommendation, resume_tip FROM jobs WHERE scored = 1 AND match_score > 0"
+    )
+    for r in rows:
+        d = dict(r)
+        sig = clone_signature(d)
+        if sig and sig not in cache:
+            skills = [s.strip() for s in (d.get("missing_skills") or "").split(",") if s.strip()]
+            try:
+                cache[sig] = JobMatch(
+                    match_score=int(d["match_score"] or 0),
+                    priority=d["priority"] or "Low",
+                    fit_reason=d["fit_reason"] or "",
+                    missing_skills=skills,
+                    recommendation=d["recommendation"] or "Skip",
+                    resume_tip=d.get("resume_tip") or "",
+                    cover_letter=d.get("cover_letter") or "",
+                    star_story=d.get("star_story") or "",
+                )
+            except Exception:
+                continue
+    return cache
+
+
+def stage_score(
+    db_path: str = DB_PATH,
+    scorer=None,
+    sleep_sec: float = None,
+    max_calls: int = None,
+) -> int:
+    """Score unscored rows. `scorer(job_dict) -> JobMatch` can be injected for offline tests."""
+    sleep_sec = SCORE_SLEEP_SEC if sleep_sec is None else sleep_sec
+    limit_calls = MAX_SCORE_PER_RUN if max_calls is None else max_calls
+
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    rows = [dict(r) for r in cur.execute("SELECT * FROM jobs WHERE scored = 0 ORDER BY id DESC")]
+    print(f"[score] {len(rows)} unscored job(s)")
+    if not rows:
+        conn.close()
+        return 0
+
+    custom_scorer = scorer is not None
+    active_models = list(MODEL_CHAIN) if not custom_scorer else ["custom"]
+    clone_cache = {} if custom_scorer else _load_clone_cache(conn)
+
+    client = None
+    profile = ""
+    if not custom_scorer:
+        if not GEMINI_API_KEY:
+            conn.close()
+            raise SystemExit("[score] GEMINI_API_KEY missing in .env")
+        from google import genai
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        profile = load_profile()
+        print(f"[score] model chain: {' -> '.join(active_models)}")
+
+    done = api_calls = 0
+    rerank_on = bool(RERANK_MODEL)
+    fb_models = list(FALLBACK_MODELS) if (FALLBACK_BASE_URL and not custom_scorer) else []
+    fb_active = False
+    applied_keys = load_applied_keys(conn)
+
+    for job in rows:
+        skip_why = (
+            "Auto-skipped: already applied (same company + title marked applied, any site)."
+            if is_applied_duplicate(job, applied_keys) else None
+        ) or _prefilter_reason(job)
+        if skip_why:
+            cur.execute(
+                "UPDATE jobs SET scored=1, match_score=0, priority='Low', recommendation='Skip', "
+                "fit_reason=?, missing_skills='', resume_tip='', scored_model='prefilter', "
+                "scored_at=? WHERE id=?",
+                (skip_why, now_utc(), job["id"]),
+            )
+            conn.commit()
+            done += 1
+            continue
+
+        sig = None if custom_scorer else clone_signature(job)
+        if sig and sig in clone_cache:
+            cached = clone_cache[sig]
+            cur.execute(
+                "UPDATE jobs SET scored=1, match_score=?, priority=?, fit_reason=?, "
+                "missing_skills=?, recommendation=?, resume_tip=?, scored_model='clone-cache', "
+                "scored_at=? WHERE id=?",
+                (cached.match_score, cached.priority, cached.fit_reason,
+                 ", ".join(cached.missing_skills), cached.recommendation, cached.resume_tip,
+                 now_utc(), job["id"]),
+            )
+            conn.commit()
+            done += 1
+            print(f"  {cached.match_score:>3}  {job['title'][:46]} @ {job['company'][:22]} [clone]")
+            continue
+
+        # HTTP Liveness Check (skips dead 404/410/closed postings before spending LLM quota)
+        if not custom_scorer and LIVENESS_CHECK:
+            target_url = job.get("job_url_direct") or job.get("job_url") or ""
+            alive, live_reason = check_job_liveness(target_url)
+            if not alive:
+                dead_msg = f"Auto-skipped: dead listing ({live_reason})."
+                cur.execute(
+                    "UPDATE jobs SET scored=1, match_score=0, priority='Low', recommendation='Skip', "
+                    "fit_reason=?, missing_skills='', resume_tip='', scored_model='liveness-gate', "
+                    "scored_at=? WHERE id=?",
+                    (dead_msg, now_utc(), job["id"]),
+                )
+                conn.commit()
+                done += 1
+                print(f"    0  {job['title'][:46]} @ {job['company'][:22]} [dead: {live_reason}]")
+                continue
+
+        if api_calls >= limit_calls:
+            print(f"[score] hit MAX_SCORE_PER_RUN={limit_calls}; remaining rows wait for next run")
+            break
+
+        result = None
+        used_model = active_models[0] if active_models else ""
+        exhausted_all = False
+
+        while fb_active and fb_models and result is None:
+            try:
+                api_calls += 1
+                result = score_via_openai_compat(job, profile, FALLBACK_BASE_URL, FALLBACK_API_KEY, fb_models[0])
+                used_model = f"fallback:{fb_models[0]}"
+            except Exception as exc:
+                print(f"[score] fallback '{fb_models[0]}' failed ({str(exc)[:100]}); trying next fallback model")
+                fb_models.pop(0)
+        if fb_active and result is None and not fb_models:
+            print("[score] QUOTA_EXHAUSTED across all configured models; stopping cleanly. Unscored rows stay for next run.")
+            conn.close()
+            return done
+
+        while active_models and result is None and not fb_active:
+            current_model = active_models[0]
+            rotate_model = False
+
+            for attempt in range(3):
+                try:
+                    api_calls += 1
+                    if custom_scorer:
+                        result = scorer(job)
+                    else:
+                        result = score_single_job(client, job, profile, model_name=current_model)
+                    used_model = current_model
+                    break
+                except Exception as exc:
+                    if _is_auth_error(exc):
+                        print("[score] Gemini rejected GEMINI_API_KEY. Check .env and rerun.")
+                        conn.close()
+                        return done
+                    if not custom_scorer and ("NOT_FOUND" in str(exc) or ("404" in str(exc) and "model" in str(exc).lower())):
+                        print(f"[score] model '{current_model}' unavailable (404); trying next fallback...")
+                        rotate_model = True
+                        break
+                    if not custom_scorer and _is_daily_quota_error(exc):
+                        print(f"[score] daily quota full on '{current_model}'; switching model...")
+                        rotate_model = True
+                        break
+                    if _is_quota_error(exc) and attempt < 2:
+                        parsed = _parse_retry_seconds(exc)
+                        wait = 0 if sleep_sec == 0 else (min(max(parsed + 2, 15), 65) if parsed else 20 * (attempt + 1))
+                        print(f"[score] rate limited on '{current_model}'; waiting {wait}s")
+                        time.sleep(wait)
+                        continue
+                    if _is_quota_error(exc):
+                        if not custom_scorer and len(active_models) > 1:
+                            print(f"[score] '{current_model}' throttled/503 after retries; failing over...")
+                            rotate_model = True
+                        else:
+                            exhausted_all = True
+                        break
+                    print(f"[score] error on job {job['id']}: {str(exc)[:180]}")
+                    break
+
+            if rotate_model:
+                active_models.pop(0)
+                if not active_models:
+                    exhausted_all = True
+                continue
+            break
+
+        if exhausted_all and fb_models and not fb_active:
+            fb_active = True
+            print(f"[score] all Gemini models out of quota; switching to free fallback provider ({FALLBACK_BASE_URL})")
+            while fb_models and result is None:
+                try:
+                    api_calls += 1
+                    result = score_via_openai_compat(job, profile, FALLBACK_BASE_URL, FALLBACK_API_KEY, fb_models[0])
+                    used_model = f"fallback:{fb_models[0]}"
+                except Exception as exc:
+                    print(f"[score] fallback '{fb_models[0]}' failed ({str(exc)[:100]}); trying next fallback model")
+                    fb_models.pop(0)
+            if result is not None:
+                exhausted_all = False
+        if exhausted_all:
+            print("[score] QUOTA_EXHAUSTED across all configured models; stopping cleanly. Unscored rows stay for next run.")
+            conn.close()
+            return done
+
+        if result is None:
+            continue
+
+        # second opinion from a stronger model, only for promising rows (saves quota)
+        if (not custom_scorer and rerank_on and not fb_active and result.match_score >= RERANK_FROM
+                and RERANK_MODEL != used_model):
+            try:
+                api_calls += 1
+                result = score_single_job(client, job, profile, model_name=RERANK_MODEL)
+                used_model = RERANK_MODEL
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    rerank_on = False
+                    print("[score] rerank model is out of quota; rerank OFF for the rest of this run")
+                else:
+                    print(f"[score] rerank skipped ({str(exc)[:80]}); keeping first score")
+
+        cur.execute(
+            "UPDATE jobs SET scored=1, match_score=?, priority=?, fit_reason=?, "
+            "missing_skills=?, recommendation=?, resume_tip=?, scored_model=?, scored_at=? WHERE id=?",
+            (result.match_score, result.priority, result.fit_reason,
+             ", ".join(result.missing_skills), result.recommendation,
+             getattr(result, "resume_tip", "") or "", used_model, now_utc(), job["id"]),
+        )
+        conn.commit()
+        if sig:
+            clone_cache[sig] = result
+        done += 1
+        print(f"  {result.match_score:>3}  {job['title'][:50]} @ {job['company'][:25]}")
+        time.sleep(sleep_sec)
+
+    conn.close()
+    print(f"[score] scored {done} ({api_calls} API call(s))")
+    return done
+
+
+# ----------------------------------------------------------------------
+# STAGE: EXCEL
+# ----------------------------------------------------------------------
+NOTES_HEADER = "Applied? (your notes)"
+TIP_HEADER = "Resume / Pitch Tip"
+COVER_HEADER = "Tailored Cover Letter"
+STAR_HEADER = "STAR Interview Pitch"
+EXCEL_HEADERS = [
+    "ID", "Score", "Priority", "Recommendation", "Job Title", "Company", "Location",
+    "Job Listing Link", "Direct Apply Link", "Company Link", "Fit Reason", "Missing Skills",
+    "Source Channel", "Source Site", "From Email?", "Email Subject", "Email Sender",
+    "Email Date", "In Digest?", "Digest Sent At", "Scored At", NOTES_HEADER, TIP_HEADER,
+    COVER_HEADER, STAR_HEADER,
+]
+LINK_COLS = {8, 9, 10}
+
+
+def _sheet(ws, rows: List[dict], pending_ids: set, pending_ts: str) -> None:
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    hdr_fill = PatternFill("solid", start_color="1A73E8", end_color="1A73E8")
+    green = PatternFill("solid", start_color="E6F4EA", end_color="E6F4EA")
+    amber = PatternFill("solid", start_color="FEF7E0", end_color="FEF7E0")
+    side = Side(style="thin", color="DADCE0")
+    border = Border(left=side, right=side, top=side, bottom=side)
+    link_font = Font(name="Calibri", size=10, color="0563C1", underline="single")
+    base_font = Font(name="Calibri", size=10)
+
+    ws.append(EXCEL_HEADERS)
+    ws.freeze_panes = "F2"
+    ws.row_dimensions[1].height = 24
+    for c in range(1, len(EXCEL_HEADERS) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.fill, cell.font = hdr_fill, Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for r_i, r in enumerate(rows, start=2):
+        sent = r["emailed_in_digest"] == 1 or r["id"] in pending_ids
+        sent_at = r["emailed_at"] or (pending_ts if r["id"] in pending_ids else "")
+        ws.append([
+            r["id"], r["match_score"] or 0, r["priority"] or "", r["recommendation"] or "",
+            r["title"] or "", r["company"] or "", r["location"] or "",
+            r["job_url"] or "", r["job_url_direct"] or r["job_url"] or "", r["company_url"] or "",
+            r["fit_reason"] or "", r["missing_skills"] or "", r["source_channel"] or "",
+            r["source_site"] or "", "Yes" if r["came_from_email"] else "No",
+            r["source_email_subject"] or "", r["source_email_sender"] or "",
+            r["source_email_date"] or "", "Yes" if sent else "No", sent_at, r["scored_at"] or "",
+            r.get("user_notes") or "", r.get("resume_tip") or "",
+        ])
+        score = r["match_score"] or 0
+        fill = green if score >= 80 else (amber if score >= MIN_SCORE else None)
+        for c in range(1, len(EXCEL_HEADERS) + 1):
+            cell = ws.cell(row=r_i, column=c)
+            cell.border = border
+            if fill:
+                cell.fill = fill
+            url = str(cell.value or "")
+            if c in LINK_COLS and url.startswith("http") and len(url) < 2000:
+                cell.hyperlink = url
+                cell.font = link_font
+            else:
+                cell.font = base_font
+            cell.alignment = Alignment(vertical="top", wrap_text=c in (11, 12, 16, 23))
+    widths = [6, 7, 10, 14, 34, 24, 20, 40, 40, 28, 50, 32, 18, 16, 10, 36, 28, 22, 10, 22, 22, 24, 32, 60, 60]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.auto_filter.ref = ws.dimensions
+
+
+def _applications_sheet(ws, app_rows: List[dict]) -> None:
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    headers = ["ID", "Status", "Applied Date", "Follow-Up Date", "Company", "Job Title", "Job Link", "Notes", "Updated At"]
+    hdr_fill = PatternFill("solid", start_color="1A73E8", end_color="1A73E8")
+    side = Side(style="thin", color="DADCE0")
+    border = Border(left=side, right=side, top=side, bottom=side)
+    link_font = Font(name="Calibri", size=10, color="0563C1", underline="single")
+    base_font = Font(name="Calibri", size=10)
+
+    ws.append(headers)
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 24
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.fill, cell.font = hdr_fill, Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for r_i, r in enumerate(app_rows, start=2):
+        ws.append([
+            r["id"], r["status"], r["applied_date"], r["follow_up_date"] or "",
+            r["company"], r["title"], r["job_url"] or "", r["notes"] or "", r["updated_at"] or "",
+        ])
+        for c in range(1, len(headers) + 1):
+            cell = ws.cell(row=r_i, column=c)
+            cell.border = border
+            url = str(cell.value or "")
+            if c == 7 and url.startswith("http") and len(url) < 2000:
+                cell.hyperlink = url
+                cell.font = link_font
+            else:
+                cell.font = base_font
+            cell.alignment = Alignment(vertical="top", wrap_text=(c == 8))
+
+    for i, w in enumerate([6, 14, 14, 15, 24, 34, 40, 36, 22], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.auto_filter.ref = ws.dimensions
+
+
+def sync_notes_from_excel(db_path: str = DB_PATH, excel_path: str = EXCEL_PATH) -> int:
+    """Sync user notes typed into Excel back into SQLite (and `applications`) before rebuilding."""
+    import glob
+    from openpyxl import load_workbook
+
+    stem, ext = os.path.splitext(excel_path)
+    files = [f for f in [excel_path] + glob.glob(f"{stem}_*{ext}") if os.path.isfile(f)]
+    files.sort(key=os.path.getmtime)
+    if not files:
+        return 0
+    conn = get_conn(db_path)
+    current = {r["id"]: (r["user_notes"] or "") for r in conn.execute("SELECT id, user_notes FROM jobs")}
+    changed = 0
+    for path in files:
+        try:
+            wb = load_workbook(path, read_only=True, data_only=True)
+        except Exception as exc:
+            print(f"[excel] could not read notes from '{path}': {exc}")
+            continue
+        for ws in wb.worksheets:
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            if not header or "ID" not in header or NOTES_HEADER not in header:
+                continue
+            i_id, i_note = header.index("ID"), header.index(NOTES_HEADER)
+            for row in rows:
+                if len(row) <= max(i_id, i_note) or row[i_note] is None:
+                    continue
+                note = str(row[i_note]).strip()
+                if not note or not isinstance(row[i_id], (int, float)):
+                    continue
+                jid = int(row[i_id])
+                new = "" if note == "-" else note
+                if jid in current and new != current[jid]:
+                    current[jid] = new
+                    conn.execute("UPDATE jobs SET user_notes=? WHERE id=?", (new, jid))
+                    changed += 1
+        wb.close()
+    sync_applications_from_jobs(conn)
+    conn.commit()
+    conn.close()
+    if changed:
+        print(f"[excel] kept {changed} note(s) you typed in Excel (and synced to applications table)")
+    return changed
+
+
+def stage_excel(
+    db_path: str = DB_PATH,
+    excel_path: str = EXCEL_PATH,
+    pending_ids: set = None,
+    pending_ts: str = "",
+) -> str:
+    from openpyxl import Workbook
+
+    pending_ids = pending_ids or set()
+    sync_notes_from_excel(db_path, excel_path)
+    conn = get_conn(db_path)
+    sync_applications_from_jobs(conn)
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM jobs WHERE scored = 1 ORDER BY match_score DESC, id DESC"
+    )]
+    try:
+        app_rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM applications ORDER BY applied_date DESC, id DESC"
+        )]
+    except sqlite3.Error:
+        app_rows = []
+    applied_keys = load_applied_keys(conn)
+    conn.close()
+
+    email_rows = [
+        r for r in rows
+        if r["came_from_email"] == 1 or r["emailed_in_digest"] == 1 or r["id"] in pending_ids
+    ]
+    # Top sheet: keep rows you marked yourself (so your tracker stays intact) but hide the copies of
+    # an applied job that turned up on another site (they stay in All_Scored_Jobs).
+    top_rows = [r for r in rows if (r["match_score"] or 0) >= MIN_SCORE
+                and (note_is_applied(r.get("user_notes") or "")
+                     or not is_applied_duplicate(r, applied_keys))]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "All_Scored_Jobs"
+    _sheet(ws, rows, pending_ids, pending_ts)
+    _sheet(wb.create_sheet("From_Email_Or_Sent"), email_rows, pending_ids, pending_ts)
+    _sheet(wb.create_sheet(f"Top_{MIN_SCORE}_Plus"), top_rows, pending_ids, pending_ts)
+    _applications_sheet(wb.create_sheet("Applications_Tracker"), app_rows)
+
+    try:
+        wb.save(excel_path)
+    except PermissionError:
+        alt = excel_path.replace(".xlsx", f"_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+        wb.save(alt)
+        print(f"[excel] '{excel_path}' is open in Excel; saved '{alt}' instead")
+        excel_path = alt
+    print(f"[excel] {excel_path}: {len(rows)} total, {len(email_rows)} email/sent, {len(top_rows)} top, {len(app_rows)} tracked applications")
+    return excel_path
+
+
+# ----------------------------------------------------------------------
+# STAGE: DIGEST
+# ----------------------------------------------------------------------
+def build_digest_html(jobs: List[dict]) -> str:
+    e = lambda v: html.escape(str(v or ""))  # noqa: E731
+    rows = ""
+    for j in jobs:
+        color = "#137333" if j["match_score"] >= 80 else "#B06000"
+        direct = j["job_url_direct"] or j["job_url"]
+        origin = (
+            f"Email alert: {e(j['source_email_subject'])}" if j["came_from_email"]
+            else f"{e(j['source_channel'])}: {e(j['source_site'])}"
+        )
+        company = (
+            f' | <a href="{e(j["company_url"])}">Company</a>'
+            if str(j["company_url"] or "").startswith("http") else ""
+        )
+        posted = f" | Posted: {e(str(j.get('date_posted') or '')[:10])}" if j.get("date_posted") else ""
+        tip_html = (
+            f'<br><span style="color:#1A73E8"><b>Pitch tip:</b> {e(j.get("resume_tip"))}</span>'
+            if j.get("resume_tip") else ""
+        )
+        rows += f"""<tr style="border-bottom:1px solid #DADCE0">
+<td style="padding:10px;text-align:center;font-weight:bold;color:{color}">{j['match_score']}<br>
+<span style="font-size:11px">{e(j['priority'])}</span></td>
+<td style="padding:10px"><b>{e(j['title'])}</b><br>{e(j['company'])} - {e(j['location'])}<br>
+<span style="font-size:11px;color:#575B5F">{origin}{posted}</span></td>
+<td style="padding:10px;font-size:13px"><b>{e(j['recommendation'])}</b>: {e(j['fit_reason'])}<br>
+<b>Missing:</b> {e(j['missing_skills']) or 'None'}{tip_html}</td>
+<td style="padding:10px;white-space:nowrap"><a href="{e(j['job_url'])}">Listing</a> |
+<a href="{e(direct)}">Apply</a>{company}</td></tr>"""
+    return f"""<html><body style="font-family:Arial,sans-serif">
+<h2 style="color:#1A73E8">{len(jobs)} new cloud job match(es), score &ge; {MIN_SCORE}</h2>
+<p>Excel tracker attached. Add your application status in the <b>{e(NOTES_HEADER)}</b> column - your notes sync back automatically into the <b>applications</b> table on the next run.</p>
+<table style="width:100%;border-collapse:collapse;border:1px solid #DADCE0">
+<tr style="background:#1A73E8;color:#fff"><th>Score</th><th>Role</th><th>Assessment</th><th>Links</th></tr>
+{rows}</table></body></html>"""
+
+
+
+def build_digest_extra_html(job: dict) -> str:
+    """Returns collapsible HTML with tailored resume bullets, cover letter, STAR story, and company review links."""
+    import os, html as _h, urllib.parse as _up
+    jid = job.get("id")
+    company = (job.get("company") or "").strip()
+    comp_q = _up.quote_plus(company)
+    slug_q = re.sub(r"[^a-z0-9]+", "-", company.lower()).strip("-")
+
+    review_links = (
+        f'<div style="margin-top:6px;font-size:12px;">'
+        f'<b>Company Reviews &amp; Intel:</b> '
+        f'<a href="https://www.ambitionbox.com/overview/{slug_q}-overview">AmbitionBox Reviews</a> | '
+        f'<a href="https://www.ambitionbox.com/interviews/{slug_q}-interview-questions">Interview Qs</a> | '
+        f'<a href="https://www.glassdoor.co.in/Search/results.htm?keyword={comp_q}">Glassdoor</a> | '
+        f'<a href="https://www.linkedin.com/search/results/people/?keywords={_up.quote_plus(company + " cloud support")}">LinkedIn Team</a>'
+        f'</div>'
+    )
+
+    tailored_txt = ""
+    txt_path = f"tailored_resume_job_{jid}.txt"
+    if not os.path.exists(txt_path) and (job.get("match_score") or 0) >= 75:
+        try:
+            import resume_tailor
+            resume_tailor.tailor_resume_for_job(int(jid))
+        except Exception:
+            pass
+    if os.path.exists(txt_path):
+        try:
+            with open(txt_path, "r", encoding="utf-8") as tf:
+                tailored_txt = tf.read().strip()
+        except Exception:
+            pass
+
+    blocks = [review_links]
+    if tailored_txt:
+        blocks.append(
+            f'<details style="margin-top:6px;"><summary style="cursor:pointer;font-weight:bold;color:#0b5394;">'
+            f'View Tailored Resume Summary &amp; ATS Bullets</summary>'
+            f'<pre style="white-space:pre-wrap;font-size:12px;background:#f4f8fb;padding:8px;border-radius:4px;">'
+            f'{_h.escape(tailored_txt)}</pre></details>'
+        )
+    if job.get("cover_letter"):
+        blocks.append(
+            f'<details style="margin-top:6px;"><summary style="cursor:pointer;font-weight:bold;color:#134f5c;">'
+            f'View Tailored Cover Letter</summary>'
+            f'<pre style="white-space:pre-wrap;font-size:12px;background:#f6f9f9;padding:8px;border-radius:4px;">'
+            f'{_h.escape(job.get("cover_letter") or "")}</pre></details>'
+        )
+    if job.get("star_story"):
+        blocks.append(
+            f'<details style="margin-top:6px;"><summary style="cursor:pointer;font-weight:bold;color:#38761d;">'
+            f'View STAR Interview Story</summary>'
+            f'<pre style="white-space:pre-wrap;font-size:12px;background:#f4f9f4;padding:8px;border-radius:4px;">'
+            f'{_h.escape(job.get("star_story") or "")}</pre></details>'
+        )
+    return "".join(blocks)
+
+def stage_digest(db_path: str = DB_PATH, excel_path: str = EXCEL_PATH) -> int:
+    conn = get_conn(db_path)
+    jobs = [dict(r) for r in conn.execute(
+        "SELECT * FROM jobs WHERE scored=1 AND match_score>=? AND emailed_in_digest=0 "
+        "ORDER BY match_score DESC, id DESC",
+        (MIN_SCORE,),
+    )]
+    applied_keys = load_applied_keys(conn)
+    conn.close()
+
+    # hide anything already applied to, including the same company+title found on another site
+    before = len(jobs)
+    jobs = [j for j in jobs if not is_applied_duplicate(j, applied_keys)]
+    if before != len(jobs):
+        print(f"[digest] hid {before - len(jobs)} job(s) already applied to (same company+title)")
+
+    if not jobs:
+        print(f"[digest] nothing new with score >= {MIN_SCORE}")
+        stage_excel(db_path, excel_path)
+        return 0
+
+    ts = now_utc()
+    ids = {j["id"] for j in jobs}
+    attach_path = stage_excel(db_path, excel_path, pending_ids=ids, pending_ts=ts)
+
+    if not (EMAIL_ADDRESS and EMAIL_PASSWORD):
+        print("[digest] SMTP credentials missing; Excel written, email skipped.")
+        return 0
+
+    msg = MIMEMultipart()
+    msg["From"], msg["To"] = EMAIL_ADDRESS, RECIPIENT_EMAIL
+    msg["Subject"] = f"[Job Agent] {len(jobs)} new cloud match(es), score >= {MIN_SCORE}"
+    msg.attach(MIMEText(build_digest_html(jobs), "html"))
+    if os.path.exists(attach_path):
+        with open(attach_path, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(attach_path)}"')
+        msg.attach(part)
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_ADDRESS, [RECIPIENT_EMAIL], msg.as_string())
+    except Exception as exc:
+        print(f"[digest] SEND FAILED: {exc}. Rows left un-emailed; will retry next run.")
+        stage_excel(db_path, excel_path)
+        return 0
+
+    conn = get_conn(db_path)
+    conn.executemany(
+        "UPDATE jobs SET emailed_in_digest=1, emailed_at=? WHERE id=?",
+        [(ts, i) for i in ids],
+    )
+    conn.commit()
+    conn.close()
+    stage_excel(db_path, excel_path)
+    print(f"[digest] sent {len(jobs)} job(s) to {RECIPIENT_EMAIL}")
+    return len(jobs)
+
+
+# ----------------------------------------------------------------------
+# STAGE: STATUS (Terminal Dashboard)
+# ----------------------------------------------------------------------
+def stage_status(db_path: str = DB_PATH) -> None:
+    conn = get_conn(db_path)
+    total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    scored = conn.execute("SELECT COUNT(*) FROM jobs WHERE scored=1").fetchone()[0]
+    unscored = conn.execute("SELECT COUNT(*) FROM jobs WHERE scored=0").fetchone()[0]
+    prefiltered = conn.execute("SELECT COUNT(*) FROM jobs WHERE scored=1 AND match_score=0").fetchone()[0]
+    dead_count = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE scored=1 AND scored_model='liveness-gate'"
+    ).fetchone()[0]
+    high = conn.execute("SELECT COUNT(*) FROM jobs WHERE scored=1 AND match_score>=80").fetchone()[0]
+    top = conn.execute("SELECT COUNT(*) FROM jobs WHERE scored=1 AND match_score>=?", (MIN_SCORE,)).fetchone()[0]
+    noted = conn.execute("SELECT COUNT(*) FROM jobs WHERE TRIM(COALESCE(user_notes, '')) != ''").fetchone()[0]
+    try:
+        app_total = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+    except sqlite3.Error:
+        app_total = 0
+
+    applied_keys = load_applied_keys(conn)
+    top_unapplied = [
+        r for r in conn.execute(
+            "SELECT id, match_score, title, company, location, recommendation, user_notes "
+            "FROM jobs WHERE scored=1 AND match_score>=? AND TRIM(COALESCE(user_notes, '')) = '' "
+            "ORDER BY match_score DESC, id DESC",
+            (MIN_SCORE,),
+        ).fetchall()
+        if not is_applied_duplicate(dict(r), applied_keys)
+    ][:10]
+    conn.close()
+
+    print("\n=== CLOUD JOB AGENT STATUS ===")
+    print(f"Database       : {db_path} ({total} total jobs)")
+    print(f"Scored / Queue : {scored} scored ({prefiltered} pre-filtered, {dead_count} dead links) | {unscored} waiting")
+    print(f"Matches        : {top} scoring >= {MIN_SCORE} ({high} scoring 80+)")
+    print(f"Applications   : {app_total} in `applications` table ({noted} notes in `jobs`)")
+    print(f"Model Chain    : {' -> '.join(MODEL_CHAIN)}")
+    if top_unapplied:
+        print(f"\nTop Unapplied Matches (score >= {MIN_SCORE}):")
+        for r in top_unapplied:
+            print(f"  [{r['match_score']:>3}] #{r['id']:<4} {r['title'][:40]} @ {r['company'][:22]} ({r['location'][:18]})")
+    print("==============================\n")
+
+
+# ----------------------------------------------------------------------
+# MAIN
+# ----------------------------------------------------------------------
+def stage_remote(db_path: str = DB_PATH) -> int:
+    """Worldwide remote jobs from public feeds (see remote_feeds.py). Skipped if that file is absent."""
+    try:
+        import remote_feeds
+    except ImportError:
+        print("[remote] remote_feeds.py not found; skipping.")
+        return 0
+    refresh_applied_cache(db_path)
+    return remote_feeds.run(db_path, get_conn, insert_job, job_hash, SENIOR_TITLE)
+
+
+STAGES = {
+    "init": stage_init, "scrape": stage_scrape, "ats": stage_ats, "remote": stage_remote, "email": stage_email,
+    "score": stage_score, "excel": stage_excel, "digest": stage_digest, "status": stage_status,
+}
+ORDER = ["init", "scrape", "ats", "remote", "email", "score", "digest"]
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--stage", choices=sorted(STAGES), help="run a single stage")
+    ap.add_argument("--kit", type=int, default=None, help="Print full application kit for a job ID")
+    ap.add_argument("--max", type=int, default=None, help="override MAX_SCORE_PER_RUN for scoring")
+    ap.add_argument(
+        "--track",
+        type=str,
+        default=None,
+        help="Track an application directly: 'Company | Title | applied | Optional note'",
+    )
+    args = ap.parse_args()
+
+    if args.kit is not None:
+        conn = get_conn(DB_PATH)
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (args.kit,)).fetchone()
+        conn.close()
+        if not row:
+            raise SystemExit(f"Job #{args.kit} not found in {DB_PATH}")
+        r = dict(row)
+        try:
+            from networking_helper import pick_resume, connection_note
+            res_pdf = pick_resume(r.get("title", ""), r.get("description", ""))
+            li_note = connection_note(r.get("title", ""), r.get("company", ""))
+        except Exception:
+            res_pdf, li_note = "Sourav_Roy_Chowdhury_AWS_Cloud_Support.pdf", ""
+        print(f"\n=== APPLICATION KIT: #{r['id']} [{r.get('match_score')}/100] ===")
+        print(f"Role    : {r.get('title')} @ {r.get('company')} ({r.get('location')})")
+        print(f"Apply   : {r.get('job_url_direct') or r.get('job_url')}")
+        print(f"Resume  : {res_pdf}")
+        print(f"Fit     : {r.get('fit_reason')}")
+        if r.get("resume_tip"):
+            print(f"Tip     : {r.get('resume_tip')}")
+        if li_note:
+            print(f"\n--- LinkedIn Note (<=300 chars) ---\n{li_note}")
+        if r.get("cover_letter"):
+            print(f"\n--- Tailored Cover Letter ---\n{r.get('cover_letter')}")
+        if r.get("star_story"):
+            print(f"\n--- STAR Interview Story ---\n{r.get('star_story')}")
+        print("\n--- Technical Prep (DevOps & SRE Exercises) ---")
+        print("  AWS / Linux / Terraform : https://github.com/bregman-arie/devops-exercises")
+        print("  Incident & SRE Triage   : https://github.com/mxssl/sre-interview-prep-guide")
+        print("  Linux & Sysadmin Scenarios : https://github.com/trimstray/test-your-sysadmin-skills")
+        comp_slug = re.sub(r"[^a-z0-9]+", "-", (r.get("company") or "").lower()).strip("-")
+        comp_q = urllib.parse.quote_plus((r.get("company") or "").strip())
+        print("\n--- Company Reviews, Culture & Interview Intel ---")
+        print(f"  AmbitionBox Reviews     : https://www.ambitionbox.com/overview/{comp_slug}-overview")
+        print(f"  AmbitionBox Interviews  : https://www.ambitionbox.com/interviews/{comp_slug}-interview-questions")
+        print(f"  Glassdoor India Search  : https://www.glassdoor.co.in/Search/results.htm?keyword={comp_q}")
+        print("=========================================\n")
+        return
+
+    if args.track:
+        parts = [p.strip() for p in args.track.split("|")]
+        if len(parts) < 2:
+            raise SystemExit("Usage: python job_agent.py --track \"Company | Job Title | applied | Note\"")
+        comp, ttl = parts[0], parts[1]
+        st = parts[2] if len(parts) >= 3 and parts[2] else "applied"
+        nts = parts[3] if len(parts) >= 4 else f"Applied {today_iso()}"
+        key = upsert_application(DB_PATH, comp, ttl, status=st, notes=nts)
+        print(f"[track] recorded [{st.upper()}] {comp} - {ttl} (key: {key})")
+        return
+
+    if args.stage:
+        if args.stage != "init":
+            stage_init()
+        if args.stage == "score" and args.max is not None:
+            stage_score(max_calls=args.max)
+        else:
+            STAGES[args.stage]()
+        return
+    for name in ORDER:
+        try:
+            if name == "score" and args.max is not None:
+                stage_score(max_calls=args.max)
+            else:
+                STAGES[name]()
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"[{name}] FAILED: {exc}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
