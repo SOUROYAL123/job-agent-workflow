@@ -1,4 +1,4 @@
-"""
+﻿"""
 ========================================================================================
 ULTIMATE AGENTIC CAREER INTELLIGENCE & JOB SEARCH ENGINE (CareerOS Core)
 ========================================================================================
@@ -13,6 +13,8 @@ Integrates:
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
 import sys
 import json
 import re
@@ -48,7 +50,7 @@ class AgentConfig:
 
     # --- AI & Reasoning Engine (Gemini) ---
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     TEMPERATURE: float = 0.2
 
     # --- Scoring & Prioritization Thresholds ---

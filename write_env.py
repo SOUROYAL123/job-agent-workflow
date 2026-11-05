@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 write_env.py - Writes the full, validated CareerOS configuration to .env.
 Creates a timestamped backup before writing and verifies all keys upon completion.
@@ -27,8 +27,8 @@ CONFIG_MAP = {
     # 2. GOOGLE GEMINI & LLM REASONING CORE
     # --------------------------------------------------------------------------
     "GEMINI_API_KEY": "REPLACE_WITH_YOUR_KEY",
-    "GEMINI_MODEL": "gemini-2.5-flash",
-    "GEMINI_FALLBACK_MODEL": "gemini-1.5-flash",
+    "GEMINI_MODEL": "gemini-3.5-flash",
+    "GEMINI_FALLBACK_MODEL": "gemini-3.5-flash-lite",
     "LLM_TEMPERATURE": "0.2",
     "LLM_REQUEST_TIMEOUT": "20",
     "DEEPSEEK_API_KEY": "your_deepseek_api_key_here",
@@ -41,7 +41,7 @@ CONFIG_MAP = {
     "MIN_SCORE_TOP_TIER": "80",
     "MIN_SCORE_DIGEST": "60",
     "MIN_EMAIL_MATCH_SCORE": "60",
-    "RERANK_MODEL": "gemini-2.5-flash",
+    "RERANK_MODEL": "gemini-3.5-flash",
     "RERANK_FROM_SCORE": "35",
     "SCORE_SLEEP_SEC": "8",
     "MAX_SCORE_PER_RUN": "60",
@@ -209,12 +209,12 @@ def main():
     if target_path.exists():
         backup_path = Path(f".env.bak_{datetime.now():%Y%m%d_%H%M%S}")
         shutil.copyfile(target_path, backup_path)
-        print(f"[✓] Existing .env backed up to: {backup_path.name}")
+        print(f"[âœ“] Existing .env backed up to: {backup_path.name}")
 
     # 2. Write new .env file
     env_content = build_env_file_string(CONFIG_MAP)
     target_path.write_text(env_content, encoding="utf-8")
-    print(f"[✓] Successfully wrote {len(CONFIG_MAP)} parameters to .env ({len(env_content)} bytes)")
+    print(f"[âœ“] Successfully wrote {len(CONFIG_MAP)} parameters to .env ({len(env_content)} bytes)")
 
     # 3. Read back and verify
     lines = [
@@ -222,7 +222,7 @@ def main():
         for line in target_path.read_text(encoding="utf-8").splitlines()
         if "=" in line and not line.strip().startswith("#")
     ]
-    print(f"[✓] Verification: {len(lines)} active keys verified on disk.")
+    print(f"[âœ“] Verification: {len(lines)} active keys verified on disk.")
 
 
 if __name__ == "__main__":

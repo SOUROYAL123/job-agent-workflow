@@ -66,3 +66,47 @@ run_daily.bat
 live_system_ids.json
 sources_verified.json
 logs/
+
+# Environment & Credentials
+.env
+.env.*
+
+# Local Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated Exports
+*.xlsx
+exports/
+
+# Local Diagnostic Scripts
+inspect_keys.py
+update_credentials.py
+
+# Python Cache
+__pycache__/
+*.py[cod]
+.venv/
+env/
+
+# Logs
+*.log
+
+# Local diagnostic scripts
+ping*.py
+get_chat_id.py
+inspect_keys.py
+update_credentials.py
+
+# Local test scripts
+ping*.py
+get_chat_id.py
+inspect_keys.py
+update_credentials.py
+
+# Local diagnostic scripts
+ping*.py
+get_chat_id.py
+inspect_keys.py
+update_credentials.py

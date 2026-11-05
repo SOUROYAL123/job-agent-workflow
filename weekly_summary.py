@@ -1,4 +1,4 @@
-"""
+﻿"""
 weekly_summary.py - emails YOU a weekly report: what was found, what you applied to, and which
 sources actually led to replies. Reads only your own files. Sends at most once every 7 days.
 
@@ -9,6 +9,8 @@ assessment, screening.  Negative: reject, declined, not selected, no reply, no r
 Run: python weekly_summary.py   (add --print to preview, --force to send now)
 """
 import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
 import re
 import smtplib
 import sqlite3

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 ========================================================================================
 CAREEROS MASTER ENGINE - END-TO-END CAREER INTELLIGENCE & APPLICATION PIPELINE
@@ -49,7 +49,7 @@ def load_env(filepath: str = ".env"):
                 key, val = line.split("=", 1)
                 key = key.strip()
                 val = val.strip().strip('"').strip("'")
-                if key and key not in os.environ:
+                if key:
                     os.environ[key] = val
 
 load_env()
@@ -59,7 +59,7 @@ load_env()
 # --------------------------------------------------------------------------------------
 class Config:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").replace("gemini-flash", "gemini-2.5-flash")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").replace("gemini-flash", "gemini-3.5-flash")
 
     EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "").strip()
     EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "").replace(" ", "").strip()
@@ -379,11 +379,11 @@ def send_telegram(job: Dict[str, Any]):
     if not Config.ENABLE_TELEGRAM_ALERTS or not Config.TELEGRAM_BOT_TOKEN or not Config.TELEGRAM_CHAT_ID:
         return
     text = (
-        f"🚨 *Top Match ({job['match_score']}/100)*: {job['title']}\n"
-        f"🏢 *Company*: {job['company']} ({job.get('location', 'India')})\n"
-        f"🎯 *Recommendation*: {job['recommendation']}\n"
-        f"💡 *Pitch Tip*: {job.get('resume_tip', '')}\n"
-        f"🔗 [Apply Here]({job['job_url']})"
+        f"ðŸš¨ *Top Match ({job['match_score']}/100)*: {job['title']}\n"
+        f"ðŸ¢ *Company*: {job['company']} ({job.get('location', 'India')})\n"
+        f"ðŸŽ¯ *Recommendation*: {job['recommendation']}\n"
+        f"ðŸ’¡ *Pitch Tip*: {job.get('resume_tip', '')}\n"
+        f"ðŸ”— [Apply Here]({job['job_url']})"
     )
     url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = json.dumps({"chat_id": Config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
@@ -429,7 +429,7 @@ def export_excel(conn: sqlite3.Connection, filepath: str = Config.EXCEL_BACKUP_P
     ws_top.row_dimensions[1].height = 24
 
     for r_i, r in enumerate(top_rows, start=2):
-        ws_top.append([r["id"], r["match_score"], r["priority"], r["title"], r["company"], r["location"], r["job_url"], r["fit_reason"], r["resume_tip"], r["discovered_at"]])
+        ws_top.append([r["id"], r["match_score"], r["priority"], r["title"], r["company"], r["location"], r["job_url"], r["fit_reason"], r["resume_tip"], r["created_at"]])
         score_fill = green_fill if r["match_score"] >= 80 else amber_fill
         for c_i in range(1, len(headers) + 1):
             cell = ws_top.cell(row=r_i, column=c_i)
@@ -446,7 +446,7 @@ def export_excel(conn: sqlite3.Connection, filepath: str = Config.EXCEL_BACKUP_P
     ws_all = wb.create_sheet(title="All_Jobs_Log")
     ws_all.append(["ID", "Score", "Title", "Company", "Source", "URL", "Discovered At"])
     for r_i, r in enumerate(rows, start=2):
-        ws_all.append([r["id"], r["match_score"], r["title"], r["company"], r["source"], r["job_url"], r["discovered_at"]])
+        ws_all.append([r["id"], r["match_score"], r["title"], r["company"], r["source_site"], r["job_url"], r["created_at"]])
         for c_i in range(1, 8):
             cell = ws_all.cell(row=r_i, column=c_i)
             cell.border = border

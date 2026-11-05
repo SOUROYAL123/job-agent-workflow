@@ -1,4 +1,4 @@
-"""
+﻿"""
 ========================================================================================
 ULTIMATE AGENTIC CAREER INTELLIGENCE & JOB SEARCH ENGINE (CareerOS Core)
 ========================================================================================
@@ -19,6 +19,8 @@ Environment variables (set in PowerShell with $env:NAME="value"):
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
 import sys
 import json
 import re
@@ -55,7 +57,7 @@ class AgentConfig:
 
     # --- AI & Reasoning Engine (Gemini) ---
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     TEMPERATURE: float = 0.2
 
     # --- Telegram Alerting ---
@@ -497,11 +499,11 @@ def send_telegram_alert(job, bot_token: str, chat_id: str) -> bool:
     tip = tip if len(tip) <= 180 else tip[:177] + "..."
 
     text = (
-        f"🚨 <b>Top Match ({esc(j.get('match_score'))}/100)</b>: {esc(j.get('title'))}\n"
-        f"🏢 <b>Company</b>: {esc(j.get('company'))} ({esc(j.get('location'))})\n"
-        f"🎯 <b>Recommendation</b>: {esc(j.get('recommendation'))}\n"
-        f"💡 <b>Tip</b>: {esc(tip)}\n"
-        f"🔗 <a href=\"{html.escape(str(j.get('job_url') or ''), quote=True)}\">Apply Here</a>"
+        f"ðŸš¨ <b>Top Match ({esc(j.get('match_score'))}/100)</b>: {esc(j.get('title'))}\n"
+        f"ðŸ¢ <b>Company</b>: {esc(j.get('company'))} ({esc(j.get('location'))})\n"
+        f"ðŸŽ¯ <b>Recommendation</b>: {esc(j.get('recommendation'))}\n"
+        f"ðŸ’¡ <b>Tip</b>: {esc(tip)}\n"
+        f"ðŸ”— <a href=\"{html.escape(str(j.get('job_url') or ''), quote=True)}\">Apply Here</a>"
     )
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"

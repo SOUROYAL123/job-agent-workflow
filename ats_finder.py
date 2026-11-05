@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 ats_finder.py
 Probes Greenhouse, Lever, and Ashby job boards for companies in companies.txt,
@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 BASE_DIR = Path(__file__).resolve().parent
 COMPANIES_FILE = BASE_DIR / "companies.txt"

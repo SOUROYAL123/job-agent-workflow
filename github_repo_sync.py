@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 github_repo_sync.py
 Autonomous GitHub & Open-Source Discovery, Obsolescence Pruning, and Package Updater.
@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "github_sources_registry.json"

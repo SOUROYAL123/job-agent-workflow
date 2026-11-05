@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 pull_live_ids.py - Live Parameter & ID Inspector for CareerOS.
 Queries external endpoints, APIs, IMAP, and local SQLite databases
@@ -36,7 +36,7 @@ def load_env(filepath: str = ".env") -> Dict[str, str]:
                 v = v.strip().strip('"').strip("'")
                 if k:
                     env_vars[k] = v
-                    if k not in os.environ:
+                    if k:
                         os.environ[k] = v
     return env_vars
 
@@ -75,7 +75,7 @@ def inspect_telegram():
                 bot_id = res.get("id")
                 bot_name = res.get("first_name")
                 bot_user = res.get("username")
-                print(f"[✓] Bot Identity Verified:")
+                print(f"[âœ“] Bot Identity Verified:")
                 print(f"    - Bot ID:       {bot_id}")
                 print(f"    - Bot Username: @{bot_user}")
                 print(f"    - Bot Name:     {bot_name}")
@@ -94,7 +94,7 @@ def inspect_telegram():
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             results = data.get("result", [])
-            print(f"\n[✓] Live Updates & Discovered Chats: {len(results)} events found")
+            print(f"\n[âœ“] Live Updates & Discovered Chats: {len(results)} events found")
 
             discovered_chats = {}
             for update in results:
@@ -151,7 +151,7 @@ def inspect_gemini():
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             models = data.get("models", [])
-            print(f"[✓] Successfully retrieved {len(models)} accessible model endpoints:")
+            print(f"[âœ“] Successfully retrieved {len(models)} accessible model endpoints:")
             print(f"    {'Model ID Name':<38} | {'Input Token Limit':<18} | {'Display Name'}")
             print("    " + "-" * 80)
 
@@ -286,7 +286,7 @@ def inspect_gmail():
         status_unseen, unseen_data = mail.search(None, "UNSEEN")
         unseen_ids = unseen_data[0].decode().split() if status_unseen == "OK" and unseen_data[0] else []
 
-        print(f"[✓] Connected to mailbox for: {email_addr}")
+        print(f"[âœ“] Connected to mailbox for: {email_addr}")
         print(f"    - Mailbox Selected:       INBOX")
         print(f"    - Total Message Count:    {total_msgs}")
         print(f"    - Unread Messages:        {len(unseen_ids)}")
@@ -326,7 +326,7 @@ def inspect_sqlite():
 
         # Check tables
         tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        print(f"[✓] SQLite Database Found: {db_path}")
+        print(f"[âœ“] SQLite Database Found: {db_path}")
         print(f"    - Verified Tables: {', '.join(tables)}")
 
         db_stats = {"tables": tables}
