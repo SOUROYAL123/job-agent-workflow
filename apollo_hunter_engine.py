@@ -51,7 +51,7 @@ def generate_hunter_patterns(domain: str, full_name: str = "Hiring Manager") -> 
     """Generates standard corporate email permutations (Hunter.io style)."""
     if not domain or domain == ".com":
         return []
-    
+
     parts = full_name.lower().split()
     first = parts[0] if parts else "hr"
     last = parts[-1] if len(parts) > 1 else "team"
@@ -113,7 +113,7 @@ Subject: Cloud Support & Terraform Practitioner - {job.get('title')} @ {company}
 
 Hi Team,
 
-I've been tracking {company}'s cloud engineering growth and noticed your open {job.get('title')} role. 
+I've been tracking {company}'s cloud engineering growth and noticed your open {job.get('title')} role.
 With 14 years of client-facing production delivery, a live Node.js/PostgreSQL backend (LegacyLens), and a two-AZ AWS Terraform lab in ap-south-1 (ECS Fargate, ALB, RDS, SSM), I specialize in rigorous incident triage and root-cause analysis.
 
 I'd love to connect with someone on the cloud support or engineering team to discuss how my background matches your requirements.

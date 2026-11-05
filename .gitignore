@@ -61,3 +61,8 @@ Sourav_Roy_Chowdhury_Tailored_*.docx
 .env
 
 run_daily.bat
+
+# Inspection dumps & runtime logs
+live_system_ids.json
+sources_verified.json
+logs/

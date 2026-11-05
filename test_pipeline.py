@@ -244,4 +244,3 @@ assert out == "from_dotenv_file", out
 ok(".env: overrides a stale GEMINI_API_KEY environment variable")
 
 print("\nALL TESTS PASSED")
-
