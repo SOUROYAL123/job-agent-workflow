@@ -1,139 +1,114 @@
-# Job Agent Workflow
+# CareerOS: Autonomous Job Discovery & AI Career Intelligence Engine
 
-A Python pipeline that finds cloud and support job listings, scores each one against my real skills with Gemini, and delivers a daily Excel and email digest. It runs unattended on a schedule and tracks applications and notes in SQLite.
+CareerOS is an autonomous, agentic job search pipeline engineered in Python. It aggregates technical vacancy postings across verified ATS platforms (Greenhouse, Lever, Ashby), evaluates job descriptions against candidate profiles using Google Gemini, generates tailored interview pitches (STAR method), and dispatches instant push alerts via Telegram and Gmail.
 
-![Python](https://img.shields.io/badge/python-3.11+-blue) ![Gemini](https://img.shields.io/badge/LLM-Gemini-orange) ![SQLite](https://img.shields.io/badge/db-SQLite-lightgrey) ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
+---
 
-## What it does
+## Complete Workflow Script Analysis
 
-- Collects jobs from **job boards** (JobSpy), **remote feeds** (Remotive, Jobicy) and **email alerts** from portals that can't be scraped (Hirist, Instahyre, Foundit, Cutshort, Wellfound).
-- De-duplicates jobs by a stable hash, so tracking parameters in LinkedIn or Indeed links don't create duplicates.
-- Skips senior and enterprise titles before spending any API calls.
-- Scores each remaining job 0-100 with Gemini, using only skills listed in `candidate_profile.txt`.
-- Builds a 3-sheet Excel workbook and emails an HTML digest of jobs scoring 60 or above.
-- Keeps notes typed into Excel in the database, so they survive every rebuild.
+| Script Name | Category | Lines | Architecture Role & Responsibilities |
+| :--- | :--- | :--- | :--- |
+| `apollo_hunter_engine.py` | Job Feed Discovery & Scraping | 164 | Recruiter and hiring manager contact discovery engine for targeted cold outreach. |
+| `ats_finder.py` | Job Feed Discovery & Scraping | 216 | Automated ATS endpoint scanner. Probes Greenhouse, Lever, and Ashby APIs using curated company slug lists to detect active career boards. |
+| `auto_fetch_ids.py` | Auditing & Feed Sync | 104 | Automated parameter discovery script that retrieves Telegram bot updates and channel IDs directly from the Telegram API. |
+| `auto_runner.py` | Core Orchestration & Scoring | 135 | Headless task scheduler runner with execution locking, error handling, and rotating log management for daily automated runs. |
+| `careeros_master.py` | Core Orchestration & Scoring | 533 | Primary production orchestrator. Handles live ATS ingestion (Greenhouse, Lever, Ashby), SQLite deduplication, Gemini 1.5 Flash scoring, STAR pitch generation, Telegram push alerts, and Excel backup export. |
+| `create_readme_script.py` | Utility & Diagnostics | 143 | Workflow utility script. |
+| `edge_engine.py` | Job Feed Discovery & Scraping | 249 | High-speed HTTP fetcher with custom user-agents, timeout handling, and request rate-limiting for resilient ATS scraping. |
+| `followup_reminder.py` | Inbox Triage & Tracking | 142 | Application cadence tracker. Monitors application dates and generates timely follow-up reminders for unanswered submissions. |
+| `get_chat_id.py` | Testing & Diagnostics | 8 | Lightweight diagnostic script to print the active numerical chat ID from incoming Telegram bot messages. |
+| `github_repo_sync.py` | Auditing & Feed Sync | 521 | Repository synchronization utility. Tracks upstream ATS feed changes, updates organization registries, and prunes dead endpoints. |
+| `inbox_triage.py` | Inbox Triage & Tracking | 112 | Automated email monitoring engine. Uses Gmail IMAP/SMTP to triage inbound recruiter emails, interview invitations, and application receipts. |
+| `inspect_keys.py` | Utility & Diagnostics | 47 | Workflow utility script. |
+| `interview_simulator.py` | Candidate Tailoring & Prep | 89 | Interactive interview preparation simulator. Uses Gemini to generate technical and behavioral interview questions based on target job postings. |
+| `job_agent.py` | Core Orchestration & Scoring | 828 | Core CareerOS agent engine containing vacancy extraction heuristics, regex pattern matching, and Gemini scoring logic. |
+| `make_ca_bundle.py` | Utility & Diagnostics | 11 | Workflow utility script. |
+| `merge_env.py` | Environment & Configuration | 150 | Environment reconciliation tool that merges new configuration keys into existing `.env` files without overwriting existing secrets. |
+| `networking_helper.py` | Candidate Tailoring & Prep | 253 | Outreach and referral assistant. Drafts personalized connection requests, recruiter follow-ups, and networking pitches. |
+| `ping2.py` | Testing & Diagnostics | 22 | Direct model diagnostic script that tests content generation across candidate Gemini model endpoints. |
+| `ping_gemini.py` | Testing & Diagnostics | 10 | Standalone API test verifying connectivity and token authorization against the Gemini API endpoint. |
+| `ping_telegram.py` | Testing & Diagnostics | 14 | Standalone notification test validating bot token delivery to your Telegram chat ID. |
+| `pull_live_ids.py` | Auditing & Feed Sync | 391 | Credential and environment diagnostic probe. Verifies Telegram chat IDs, Gmail IMAP/SMTP connectivity, and Gemini endpoint status. |
+| `reextract_env_sources.py` | Environment & Configuration | 243 | Extracts and consolidates company slugs and ATS registries from raw configuration strings into structured JSON files. |
+| `remote_feeds.py` | Job Feed Discovery & Scraping | 308 | Secondary job board fetcher for remote tech listings, remote developer boards, and distributed cloud roles. |
+| `remote_feeds_backup.py` | Utility & Diagnostics | 230 | Workflow utility script. |
+| `resume_tailor.py` | Candidate Tailoring & Prep | 206 | Targeted resume generator. Evaluates candidate profiles against specific job descriptions to produce tailored STAR achievement bullets. |
+| `security_audit.py` | Auditing & Feed Sync | 74 | Static code analysis tool. Scans python files, configs, and logs for hardcoded secrets, exposed tokens, or unmasked credentials. |
+| `ssl_test.py` | Utility & Diagnostics | 21 | Workflow utility script. |
+| `test_pipeline.py` | Testing & Diagnostics | 246 | Integration test suite validating end-to-end data flow: ATS ingestion -> Gemini scoring -> database commit -> alert dispatch. |
+| `test_units.py` | Testing & Diagnostics | 38 | Unit test suite testing individual helper functions, regex parsing, score normalization, and schema validation. |
+| `ultimate_job_agent.py` | Core Orchestration & Scoring | 718 | Advanced multi-stage agent pipeline incorporating iterative keyword scoring, reranking filters, and structured candidate matching. |
+| `update_credentials.py` | Utility & Diagnostics | 89 | Workflow utility script. |
+| `weekly_summary.py` | Inbox Triage & Tracking | 157 | Weekly performance auditor. Compiles submission statistics, response metrics, and source conversion rates into an email digest. |
+| `write_env.py` | Environment & Configuration | 229 | Configuration utility that builds, formats, and validates the master `.env` file with timestamped backups. |
 
-## Architecture
+---
 
-```mermaid
-flowchart TD
-    subgraph Sources
-        A1[Job boards<br/>JobSpy scrape]
-        A2[Remote feeds<br/>Remotive / Jobicy]
-        A3[Gmail job alerts<br/>IMAP, BODY.PEEK]
-    end
+## Supporting Infrastructure & Configuration
 
-    A1 --> B[Normalize + hash<br/>dedupe]
-    A2 --> B
-    A3 --> B
+| File Name | Purpose |
+| :--- | :--- |
+| `.env.example` | Template configuration specifying required API keys, Telegram tokens, and ATS board slugs. |
+| `.gitignore` | Exclusion rules ensuring `.env`, `jobs.db`, generated spreadsheets (`*.xlsx`), and logs are never tracked. |
+| `.pre-commit-config.yaml` | Git pre-commit hooks enforcing formatting, YAML linting, and preventing secret exposure via Gitleaks. |
+| `dynamic_feeds.json` | Registry of verified corporate Greenhouse, Lever, and Ashby ATS URLs. |
+| `github_sources_registry.json` | Curated index of cloud infrastructure repositories and tech hiring databases. |
+| `requirements.txt` | Locked dependency manifest for requests, google-generativeai, openpyxl, python-dotenv, and pre-commit. |
+| `setup_automation.ps1` | PowerShell deployment script configuring Python virtual environments and Task Scheduler triggers. |
+| `START_HERE.bat` | One-click Windows batch runner for local diagnostic checks and immediate pipeline execution. |
 
-    B --> C[(SQLite jobs.db<br/>jobs + applications)]
-    C --> D{Title filter<br/>skip senior / enterprise}
-    D -- kept --> E[Gemini scorer<br/>0-100 vs candidate_profile.txt]
-    D -- skipped --> C
-    E -- quota / rate limit --> F[Model fallback<br/>stop cleanly, retry next run]
-    F --> E
-    E --> C
+---
 
-    C --> G[Digest builder]
-    G --> H[Excel workbook<br/>3 sheets, clickable links]
-    G --> I[HTML email digest<br/>score >= 60, sent once]
+## Pipeline Architecture
 
-    H -- notes typed by me --> J[Notes sync]
-    J --> C
-
-    K[Task Scheduler<br/>run_daily.bat] --> L[job_agent.py<br/>scrape - email - score - digest]
-    L --> C
+```
+                      +---------------------------------------+
+                      |       ATS Discovery & Ingestion       |
+                      |   (Greenhouse, Lever, Ashby APIs)     |
+                      +-------------------+-------------------+
+                                          |
+                                          v
+                      +---------------------------------------+
+                      |        SQLite Deduplication           |
+                      |             (jobs.db)                 |
+                      +-------------------+-------------------+
+                                          |
+                                          v
+                      +---------------------------------------+
+                      |       Gemini AI Reasoning Engine      |
+                      |   - Fit Scoring (0-100)               |
+                      |   - Missing Skill Analysis            |
+                      |   - Tailored STAR Interview Pitches   |
+                      +---------+-------------------+---------+
+                                |                   |
+                 +--------------+                   +---------------+
+                 | (Score >= 80)                                    |
+                 v                                                  v
++---------------------------------+                +---------------------------------+
+|      Instant Telegram Push      |                |   Workbook & Database Commit    |
+|    (@sourav_careeros_bot)       |                |    (cloud_jobs_backup.xlsx)     |
++---------------------------------+                +---------------------------------+
 ```
 
-### Pipeline stages
+---
 
-| Stage | Command | What it does |
-|---|---|---|
-| scrape | `python job_agent.py --stage scrape` | Pulls listings from boards and remote feeds |
-| email | `python job_agent.py --stage email` | Reads job-alert emails; only alert mails are marked read |
-| score | `python job_agent.py --stage score` | Scores unscored rows with Gemini; each row is scored once |
-| digest | `python job_agent.py --stage digest` | Writes the Excel file and emails the digest |
+## Quick Start
 
-Running `python job_agent.py` with no arguments runs all four in order.
-
-### Design decisions
-
-- **Idempotent and resumable.** Rows stay `unscored` until a score is stored, so an API failure never loses a job.
-- **Fails safe.** Quota exhaustion, an invalid API key, or an SMTP failure each stop that step cleanly. Rows are never marked as sent unless the email actually went out.
-- **Honest scoring.** The scorer credits only skills I have used hands-on, so it can't inflate my fit.
-- **Read-safe email access.** IMAP uses `BODY.PEEK`, so personal mail is never marked read.
-- **Excel as a lightweight UI.** Notes typed in the last column are read back into the database on the next run. Type `-` to clear one.
-- **Secrets stay out of git.** Keys live in `.env` (ignored). `.env.example` shows the variables. `security_audit.py` scans tracked and staged files for leaked keys, and `gitleaks` was run across the full history.
-
-## Project layout
-
-| File | Purpose |
-|---|---|
-| `job_agent.py` | Main pipeline and CLI (`--stage`) |
-| `remote_feeds.py` | Remote job feed ingestion |
-| `job_evaluator.py` | Scoring logic |
-| `ats_finder.py` | Company ATS / career-page discovery |
-| `weekly_summary.py` | Weekly summary email |
-| `followup_reminder.py` | Application follow-up reminders |
-| `networking_helper.py` | Networking helper |
-| `check_key.py` | Verifies the Gemini key works |
-| `test_pipeline.py` | Offline test suite, no accounts needed |
-| `run_daily.bat` / `setup_automation.ps1` | Scheduling helpers |
-| `daily_job_agent.yml` | GitHub Actions alternative (private repo only) |
-| `candidate_profile.txt` | Skills the scorer is allowed to credit |
-| `config.yaml` | Sites and settings |
-
-## Setup (Windows)
-
+### 1. Installation
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
+git clone [https://github.com/SOUROYAL123/job-agent-workflow.git](https://github.com/SOUROYAL123/job-agent-workflow.git)
+cd job-agent-workflow
+py -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env
 ```
 
-Fill in `.env` with `GEMINI_API_KEY` and a Gmail App Password (Google Account, Security, 2-Step Verification, App passwords). Then edit `candidate_profile.txt`, listing only skills you have actually used.
-
-### Verify before trusting it
-
-1. `py check_key.py` confirms the Gemini key works
-2. `python test_pipeline.py` runs the offline checks
-3. `python job_agent.py --stage scrape`; if a board returns 0 rows, drop it from the site list
-4. `python job_agent.py --stage email`
-5. `python job_agent.py --stage score` and spot-check 5-10 scores against the real posts
-6. `python job_agent.py --stage digest`
-
-### Schedule
-
-Task Scheduler, Create Basic Task, daily at 8:00, action: start `run_daily.bat`. Output goes to `run_log.txt`.
-
-## Tests
-
-`test_pipeline.py` covers:
-
-- job-id hashing and tracking-parameter handling
-- email parsing and IMAP read-safety
-- scoring, including the senior-title skip and quota/auth failure paths
-- digest sending: SMTP failure, send-once, HTML escaping
-- Excel output: sheets, links, and notes sync
-- database migration from an older schema
-
-## Re-scoring
-
-To re-score everything after changing your profile (this re-emails all rows):
-
-```bash
-sqlite3 jobs.db "UPDATE jobs SET scored=0, emailed_in_digest=0"
+### 2. Diagnostics Check
+```powershell
+py careeros_master.py --test
 ```
 
-## Roadmap
-
-- Containerize the pipeline and run it on AWS (ECS scheduled task or Lambda + EventBridge)
-- Move the database from SQLite to RDS or DynamoDB
-- Send digests through SES
-- Add CloudWatch logging and alarms for failed runs
-
-## Tech
-
-Python, SQLite, Google Gemini API, IMAP/SMTP, openpyxl (Excel), JobSpy, Windows Task Scheduler.
+### 3. Run Live Ingestion & AI Scoring
+```powershell
+py careeros_master.py
+```
