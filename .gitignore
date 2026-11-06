@@ -5,110 +5,55 @@
 *.bak
 *.bak*
 
-# Environment and cache
-.venv/
-__pycache__/
-*.pyc
-
-# Local data
-jobs.db
-*.xlsx
-weekly_summary_last_sent.txt
-ca_bundle.pem
-t.pem
-ssl_test.py
-make_ca_bundle.py
-backups/
-run_log.txt
-LAST_RUN_STATUS.txt
-last_success.txt
-.env
-.venv/
-__pycache__/
-ca_bundle.pem
-t.pem
-ssl_test.py
-make_ca_bundle.py
-backups/
-run_log.txt
-LAST_RUN_STATUS.txt
-last_success.txt
-
-candidate_profile.txt
-env_new.txt
-*.db
-old_files/
-
-*_backup.py
-ats_found.txt
-ats_last_run.txt
-
-github_sync_last_run.txt
-companies.txt
-
-.scheduler_asked
-.setup_done
-.setup_v2_done
-.env.bak*
-setup-lightsail-mumbai.ps1
-old_files/
-
-review_scripts.ps1
-
-tailored_resume_job_*.txt
-
-Sourav_Roy_Chowdhury_Tailored_*.docx
-.env
-
-run_daily.bat
-
-# Inspection dumps & runtime logs
-live_system_ids.json
-sources_verified.json
-logs/
-
-# Environment & Credentials
-.env
-.env.*
-
-# Local Databases
+# Local data & databases
 *.db
 *.sqlite
 *.sqlite3
-
-# Generated Exports
 *.xlsx
 exports/
+candidate_profile.txt
+env_new.txt
+companies.txt
+ats_found.txt
+ats_last_run.txt
+github_sync_last_run.txt
+weekly_summary_last_sent.txt
+tailored_resume_job_*.txt
+Sourav_Roy_Chowdhury_Tailored_*.docx
+live_system_ids.json
+sources_verified.json
 
-# Local Diagnostic Scripts
+# Logs & run state
+*.log
+logs/
+backups/
+run_log.txt
+LAST_RUN_STATUS.txt
+last_success.txt
+.scheduler_asked
+.setup_done
+.setup_v2_done
+
+# Certs
+ca_bundle.pem
+t.pem
+
+# Local diagnostic / one-off scripts
+ping*.py
+get_chat_id.py
 inspect_keys.py
 update_credentials.py
+write_env.py
+ssl_test.py
+make_ca_bundle.py
+*_backup.py
+review_scripts.ps1
+run_daily.bat
+setup-lightsail-mumbai.ps1
+old_files/
 
-# Python Cache
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 env/
-
-# Logs
-*.log
-
-# Local diagnostic scripts
-ping*.py
-get_chat_id.py
-inspect_keys.py
-update_credentials.py
-
-# Local test scripts
-ping*.py
-get_chat_id.py
-inspect_keys.py
-update_credentials.py
-
-# Local diagnostic scripts
-ping*.py
-get_chat_id.py
-inspect_keys.py
-update_credentials.py
-
-write_env.py

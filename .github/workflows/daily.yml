@@ -56,22 +56,18 @@ jobs:
       - name: Run Unit Verification Suite
         run: python test_units.py
 
-      - name: Sync Open-Source GitHub Repos & Prune Obsolete Sources
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python github_repo_sync.py
-          python ats_finder.py
+      - name: Refresh ATS Source Registry
+        run: python ats_finder.py
 
       - name: Run Main Job Agent Pipeline
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python job_agent.py
 
-      - name: Auto-Commit Updated Open-Source Lists to Repository
+      - name: Auto-Commit Updated Source Registries
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions Auto-Sync"
-          git add companies.txt dynamic_feeds.json github_sources_registry.json || true
-          git diff --staged --quiet || git commit -m "chore(sync): auto-discover new sources and prune obsolete repos"
-          git push || true
+          git add dynamic_feeds.json github_sources_registry.json
+          git diff --staged --quiet || git commit -m "chore(sync): update ATS source registries"
+          git push
