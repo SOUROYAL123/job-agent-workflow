@@ -19,3 +19,4 @@ jobs:
       - run: python test_units.py
       - run: python test_pipeline.py
       - run: python test_search_profile.py
+      - run: python test_inbox_triage.py

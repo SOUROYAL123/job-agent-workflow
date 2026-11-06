@@ -83,6 +83,8 @@ try {
     if ($LASTEXITCODE -ne 0) { Write-Error "test_pipeline.py failed; schedule NOT installed." }
     & $PythonConsole test_search_profile.py
     if ($LASTEXITCODE -ne 0) { Write-Error "test_search_profile.py failed; schedule NOT installed." }
+    & $PythonConsole test_inbox_triage.py
+    if ($LASTEXITCODE -ne 0) { Write-Error "test_inbox_triage.py failed; schedule NOT installed." }
 } finally {
     Pop-Location
 }

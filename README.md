@@ -16,7 +16,7 @@ CareerOS is a Python job-search pipeline. It pulls vacancies from ATS platforms 
 | `reextract_env_sources.py` | Environment & Config | 486 | Extracts company slugs and ATS registries from raw config strings into JSON. |
 | `merge_env.py` | Environment & Config | 300 | Merges new config keys into an existing .env without overwriting secrets. |
 | `security_audit.py` | Diagnostics & Sync | 148 | Scans code, configs and logs for hardcoded secrets. |
-| `inbox_triage.py` | Inbox & Tracking | 224 | Gmail IMAP triage of recruiter replies, interview invites and receipts. |
+| `inbox_triage.py` | Inbox & Tracking | 146 | Gmail IMAP triage of recruiter replies, interview invites and receipts. |
 | `followup_reminder.py` | Inbox & Tracking | 284 | Tracks application dates and emails reminders for unanswered applications. |
 | `weekly_summary.py` | Inbox & Tracking | 313 | Weekly digest of submissions, responses and source conversion. |
 | `networking_helper.py` | Candidate Prep | 506 | Drafts connection requests and referral/follow-up messages. |
@@ -25,6 +25,7 @@ CareerOS is a Python job-search pipeline. It pulls vacancies from ATS platforms 
 | `test_units.py` | Testing | 38 | Unit tests: poison-row 3-strike cap, conversion scoring. |
 | `test_pipeline.py` | Testing | 247 | Integration tests: digest, Excel export, notes sync, DB migration, auth failure. |
 | `test_search_profile.py` | Testing | 67 | Search profile merge, query rotation, priority-company location bypass. |
+| `test_inbox_triage.py` | Testing | 85 | Inbox triage: status handling, alert-sender skip, interview edge brief, missing credentials. |
 
 ## Supporting Files
 
@@ -68,6 +69,7 @@ Fill in `.env` and `candidate_profile.txt`, then:
 py test_units.py       # unit tests
 py test_pipeline.py    # integration tests
 py test_search_profile.py  # search profile tests
+py test_inbox_triage.py    # inbox triage tests
 py job_agent.py        # live ingestion + scoring
 py auto_runner.py      # full automated run (what the scheduler calls)
 ```
