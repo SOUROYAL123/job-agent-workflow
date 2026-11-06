@@ -63,14 +63,14 @@ echo [3/5] Company job feeds, refreshed once a week ...
 if errorlevel 1 echo Company feed check had a problem. Continuing anyway.
 echo.
 
-REM ---------- is the automatic 8:30 AM / 4:30 PM task installed? ----------
+REM ---------- is the automatic schedule installed? ----------
 echo [4/5] Checking the automatic schedule ...
 schtasks /query /tn "CloudJobAgent_AutoPipeline" >nul 2>&1
 if errorlevel 1 (
   echo   Automatic schedule NOT found. To create it: open PowerShell as administrator, then run
   echo   cd to this folder and run .\setup_automation.ps1
 ) else (
-  echo   Automatic schedule is active ^(8:30 AM and 4:30 PM^).
+  echo   Automatic schedule is active. Check times with: powershell .\setup_automation.ps1 -Status
 )
 echo.
 

@@ -30,6 +30,8 @@ backups/
 run_log.txt
 LAST_RUN_STATUS.txt
 last_success.txt
+.query_cursor
+agent.lock
 .scheduler_asked
 .setup_done
 .setup_v2_done

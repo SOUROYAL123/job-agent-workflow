@@ -6,7 +6,7 @@ CareerOS is a Python job-search pipeline. It pulls vacancies from ATS platforms 
 
 | Script | Category | Lines | Role |
 | :--- | :--- | ---: | :--- |
-| `job_agent.py` | Core Orchestration & Scoring | 1961 | Main pipeline: ATS/board ingestion, SQLite dedup, Gemini fit scoring, STAR pitch generation, Telegram/Gmail alerts, Excel export. |
+| `job_agent.py` | Core Orchestration & Scoring | 2031 | Main pipeline: ATS/board ingestion, SQLite dedup, Gemini fit scoring, STAR pitch generation, Telegram/Gmail alerts, Excel export. |
 | `auto_runner.py` | Core Orchestration & Scoring | 281 | Headless scheduler wrapper: run lock, DB health check and backup, rotating logs, failure alerts, then runs the follow-on scripts. |
 | `edge_engine.py` | Job Feed Discovery | 498 | Conversion scoring that prioritises fresh Direct-ATS and Kolkata roles; resilient HTTP helpers. |
 | `ats_finder.py` | Job Feed Discovery | 432 | Probes Greenhouse, Lever and Ashby with company slug lists to find active career boards. |
@@ -22,8 +22,9 @@ CareerOS is a Python job-search pipeline. It pulls vacancies from ATS platforms 
 | `networking_helper.py` | Candidate Prep | 506 | Drafts connection requests and referral/follow-up messages. |
 | `resume_tailor.py` | Candidate Prep | 412 | Tailors resume bullets to a specific job description. |
 | `interview_simulator.py` | Candidate Prep | 178 | Generates technical and behavioural interview questions for a target job. |
-| `test_units.py` | Testing | 76 | Unit tests: poison-row 3-strike cap, conversion scoring. |
+| `test_units.py` | Testing | 38 | Unit tests: poison-row 3-strike cap, conversion scoring. |
 | `test_pipeline.py` | Testing | 247 | Integration tests: digest, Excel export, notes sync, DB migration, auth failure. |
+| `test_search_profile.py` | Testing | 67 | Search profile merge, query rotation, priority-company location bypass. |
 
 ## Supporting Files
 
@@ -31,6 +32,7 @@ CareerOS is a Python job-search pipeline. It pulls vacancies from ATS platforms 
 | :--- | :--- |
 | `.env.example` | Template for API keys, Telegram tokens and email settings. |
 | `candidate_profile.example.txt` | Template for your candidate profile. |
+| `search_profile.json` | Non-secret search pack: role queries, priority-company queries, queries per run. Merged with `SEARCH_QUERIES` from `.env`. |
 | `dynamic_feeds.json` | Registry of verified Greenhouse, Lever and Ashby boards. |
 | `github_sources_registry.json` | Curated index of hiring-related source repos. |
 | `requirements.txt` | Direct dependencies, pinned. |
@@ -65,8 +67,27 @@ Fill in `.env` and `candidate_profile.txt`, then:
 ```powershell
 py test_units.py       # unit tests
 py test_pipeline.py    # integration tests
+py test_search_profile.py  # search profile tests
 py job_agent.py        # live ingestion + scoring
 py auto_runner.py      # full automated run (what the scheduler calls)
 ```
+
+## Automated launcher
+
+```powershell
+.\setup_automation.ps1                 # install: venv, deps, self-tests, then schedule 07:30, 11:30, 15:30, 19:30 + catch-up at logon
+.\setup_automation.ps1 -Status         # next/last run and last result
+.\setup_automation.ps1 -RunNow         # run immediately through the scheduler
+.\setup_automation.ps1 -Times "08:00","14:00","20:00"
+.\setup_automation.ps1 -Uninstall
+```
+
+Run it from an administrator PowerShell the first time. Missed runs start when the laptop is back online. A run is skipped if one succeeded within `COOLDOWN_HOURS` (default 2).
+
+## Search coverage
+
+`search_profile.json` adds about 25 role queries (cloud support, managed services, implementation, onboarding) and company searches (Cloud4C, Minfy, CloudThat, Rapyder, Searce) on top of `SEARCH_QUERIES`. Each run scans `queries_per_run` of them (default 10) and rotates, so every query is covered across the day without hammering the job boards. Set `SCRAPE_QUERIES_PER_RUN=0` to scan everything every run.
+
+By default only Kolkata roles (any mode) and remote roles are kept. To also keep onsite roles elsewhere from specific employers, set `LOCATION_BYPASS_COMPANIES=cloud4c,minfy,cloudthat` in `.env`.
 
 Never commit `.env`, `candidate_profile.txt`, `*.db` or `*.xlsx`; they are gitignored.

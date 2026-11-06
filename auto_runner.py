@@ -37,7 +37,7 @@ RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "").strip() or EMAIL_ADDRESS
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
-COOLDOWN_HOURS = 5          # Prevents duplicate scheduled runs after reboots
+COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "2"))  # Prevents duplicate scheduled runs after reboots
 MAX_LOG_BYTES = 2_000_000   # Rotate run_log.txt at ~2 MB
 
 

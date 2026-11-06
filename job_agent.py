@@ -26,6 +26,7 @@ import email as email_lib
 import hashlib
 import html
 import imaplib
+import json
 import os
 import re
 import smtplib
@@ -110,6 +111,70 @@ _DEFAULT_QUERIES = [
 ]
 _env_queries = [q.strip() for q in os.getenv("SEARCH_QUERIES", "").split("|") if q.strip()]
 SEARCH_QUERIES = _env_queries or _DEFAULT_QUERIES
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SEARCH_PROFILE_PATH = os.getenv("SEARCH_PROFILE_PATH", os.path.join(_BASE_DIR, "search_profile.json"))
+QUERY_CURSOR_PATH = os.getenv("QUERY_CURSOR_PATH", os.path.join(_BASE_DIR, ".query_cursor"))
+
+
+def _dedupe_keep_order(items) -> list:
+    seen, out = set(), []
+    for item in items:
+        text = re.sub(r"\s+", " ", str(item)).strip()
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            out.append(text)
+    return out
+
+
+def load_search_profile(path: str = None) -> dict:
+    """Optional non-secret search pack (search_profile.json). SEARCH_PROFILE=off disables it."""
+    if os.getenv("SEARCH_PROFILE", "on").strip().lower() in ("0", "off", "false", "no"):
+        return {}
+    path = path or SEARCH_PROFILE_PATH
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        print(f"[config] could not read {path}: {exc}")
+        return {}
+
+
+def merge_queries(base_queries: list, profile: dict) -> list:
+    """.env queries first, then the profile pack and priority-company searches; duplicates dropped."""
+    return _dedupe_keep_order(
+        list(base_queries) + list(profile.get("queries", [])) + list(profile.get("company_queries", []))
+    )
+
+
+_PROFILE = load_search_profile()
+SEARCH_QUERIES = merge_queries(SEARCH_QUERIES, _PROFILE)
+QUERIES_PER_RUN = int(os.getenv("SCRAPE_QUERIES_PER_RUN") or _PROFILE.get("queries_per_run") or 0)
+LOCATION_BYPASS_COMPANIES = [c.strip().lower() for c in os.getenv("LOCATION_BYPASS_COMPANIES", "").split(",") if c.strip()]
+
+
+def pick_queries(queries: list, per_run: int, cursor_path: str = None) -> list:
+    """Rotate through the query list so each run covers a slice; every query is hit across runs.
+    per_run <= 0 (or >= len) means use all queries every run."""
+    cursor_path = cursor_path or QUERY_CURSOR_PATH
+    n = len(queries)
+    if per_run <= 0 or per_run >= n:
+        return list(queries)
+    try:
+        with open(cursor_path, encoding="utf-8") as f:
+            start = int(f.read().strip()) % n
+    except (OSError, ValueError):
+        start = 0
+    picked = [queries[(start + i) % n] for i in range(per_run)]
+    try:
+        with open(cursor_path, "w", encoding="utf-8") as f:
+            f.write(str((start + per_run) % n))
+    except OSError:
+        pass
+    return picked
 
 _env_locs = [loc.strip() for loc in os.getenv("SEARCH_LOCATIONS", "").split("|") if loc.strip()]
 LOCATIONS = _env_locs or ["India", "Kolkata, India"]
@@ -212,6 +277,9 @@ def check_job_liveness(url: str, timeout: int = 8) -> Tuple[bool, str]:
 def location_ok(job: dict) -> bool:
     if job.get("came_from_email"):
         return True  # alert emails carry no real location; let the scorer judge
+    company = (job.get("company") or "").lower()
+    if LOCATION_BYPASS_COMPANIES and any(c in company for c in LOCATION_BYPASS_COMPANIES):
+        return True  # opt-in priority employers: keep roles outside Kolkata / non-remote
     loc = (job.get("location") or "").lower().strip()
     if loc in ("", "see listing"):
         return True
@@ -638,7 +706,9 @@ def stage_scrape(db_path: str = DB_PATH) -> int:
     conn = get_conn(db_path)
     cur = conn.cursor()
     added = 0
-    for query in SEARCH_QUERIES:
+    queries = pick_queries(SEARCH_QUERIES, QUERIES_PER_RUN)
+    print(f"[scrape] {len(queries)} of {len(SEARCH_QUERIES)} search queries this run")
+    for query in queries:
         for location in LOCATIONS:
             print(f"[scrape] '{query}' / '{location}' on {SITES}")
             india_wide = location.strip().lower() == "india"  # outside Kolkata we only want remote roles

@@ -1,0 +1,38 @@
+{
+  "_comment": "Non-secret search pack merged with SEARCH_QUERIES from .env. Edit freely. Set SEARCH_PROFILE=off in .env to ignore this file.",
+  "queries_per_run": 10,
+  "queries": [
+    "Cloud Support Engineer AWS",
+    "Cloud Support Associate AWS",
+    "Cloud Support Engineer",
+    "Cloud Support Engineer Azure",
+    "AWS Support Engineer",
+    "Technical Support Engineer AWS",
+    "Technical Support Engineer Cloud SaaS",
+    "Cloud Operations Engineer",
+    "Cloud Operations NOC Engineer AWS",
+    "Managed Cloud Services Engineer AWS",
+    "Infrastructure Support Engineer AWS",
+    "Production Support Engineer Cloud",
+    "Linux Support Engineer",
+    "DevOps Support Engineer",
+    "Junior Cloud Engineer AWS",
+    "Cloud Engineer L1 L2 support",
+    "Cloud Migration Engineer AWS",
+    "AWS Implementation Engineer",
+    "Implementation Specialist",
+    "Implementation Engineer SaaS",
+    "Implementation Consultant Cloud",
+    "Technical Onboarding Engineer",
+    "Customer Success Engineer Cloud",
+    "Associate Solutions Architect AWS",
+    "Solutions Support Engineer"
+  ],
+  "company_queries": [
+    "Cloud4C",
+    "Minfy",
+    "CloudThat",
+    "Rapyder",
+    "Searce"
+  ]
+}
