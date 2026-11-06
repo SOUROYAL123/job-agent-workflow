@@ -414,7 +414,7 @@ def clone_signature(job: dict) -> Optional[str]:
     title = re.sub(r"\s+", " ", (job.get("title") or "")).strip().lower()
     company = re.sub(r"\s+", " ", (job.get("company") or "")).strip().lower()
     raw = f"{title}||{company}||{desc[:500]}"
-    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()
+    return hashlib.md5(raw.encode("utf-8", errors="ignore"), usedforsecurity=False).hexdigest()
 
 
 def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
