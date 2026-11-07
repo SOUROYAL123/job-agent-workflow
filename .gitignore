@@ -74,3 +74,4 @@ _quarantine_*/
 _old_downloads/
 cover_letters.html
 *_report.txt
+venv/
