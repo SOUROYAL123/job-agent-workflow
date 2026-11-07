@@ -1192,6 +1192,7 @@ def score_via_openai_compat(job: dict, profile: str, base_url: str, api_key: str
         "model": model,
         "messages": [{"role": "user", "content": build_prompt(job, profile) + schema_hint}],
         "temperature": 0.15,
+        "max_tokens": 4096,
         "response_format": {"type": "json_object"},
     }
     r = requests.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=90)
