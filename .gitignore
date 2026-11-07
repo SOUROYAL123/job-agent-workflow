@@ -59,3 +59,15 @@ __pycache__/
 *.py[cod]
 .venv/
 env/
+
+  .env
+  *.db
+  *.xlsx
+  candidate_profile.txt
+  tailored_resume_job_*.txt
+  run_log.txt
+  LAST_RUN_STATUS.txt
+*.pyc
+*.pem
+_quarantine_*/
+.heal_backups/
