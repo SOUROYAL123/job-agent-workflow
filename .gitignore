@@ -72,3 +72,5 @@ env/
 _quarantine_*/
 .heal_backups/
 _old_downloads/
+cover_letters.html
+*_report.txt
